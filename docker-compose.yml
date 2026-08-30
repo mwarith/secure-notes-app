@@ -43,8 +43,28 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+
+  loki:
+    image: grafana/loki:3.7.4
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
 
 volumes:
   postgres_data:
   valkey_data:
   grafana_data:
+  prometheus_data:
+  loki_data:

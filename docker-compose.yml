@@ -1,0 +1,50 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - valkey
+    environment:
+      - DATABASE_URL=postgresql://notes_user:notes_pass@postgres:5432/secure_notes
+      - VALKEY_URL=redis://valkey:6379
+
+  postgres:
+    image: postgres:18.6
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=notes_user
+      - POSTGRES_PASSWORD=notes_pass
+      - POSTGRES_DB=secure_notes
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+  valkey:
+    image: valkey/valkey:9.1.0
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data
+
+  grafana:
+    image: grafana/grafana:13.2.0
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  postgres_data:
+  valkey_data:
+  grafana_data:

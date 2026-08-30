@@ -1,3 +1,7 @@
+## Project requirements
+
+The full product requirements are documented in `docs/PRD.md`. Read this before starting work on any ticket if you're unsure how a feature should behave, and cite the relevant PRD section when a design decision depends on it.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 # This is NOT the Next.js you know

@@ -5,6 +5,9 @@ Versions selected on 2026-08-30, per project's dependency version policy (no flo
 | Dependency | Version                                           | Source / verified against                           |
 | ---------- | ------------------------------------------------- | --------------------------------------------------- |
 | Next.js    | latest stable at scaffold time (see package.json) | npx create-next-app@latest                          |
+| Drizzle ORM  | 0.45.2 | latest stable at selection time (npm view drizzle-orm version) |
+| drizzle-kit  | 0.31.10 | latest stable at selection time (npm view drizzle-kit version) |
+| pg (node-postgres) | 8.23.0 | latest stable at selection time (npm view pg version) |
 | PostgreSQL | 18.6                                              | latest stable major (19 is in beta as of this date) |
 | Valkey     | 9.1.0                                             | latest stable release                               |
 | Grafana    | 13.2.0                                            | latest stable release                               |

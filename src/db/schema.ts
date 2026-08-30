@@ -91,8 +91,8 @@ export const auditEvents = pgTable(
     actorUserId: uuid("actor_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
-    resourceType: text("resource_type").notNull(),
-    resourceId: uuid("resource_id").notNull(),
+    resourceType: text("resource_type"),
+    resourceId: uuid("resource_id"),
     action: text("action").notNull(),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at", { withTimezone: true })

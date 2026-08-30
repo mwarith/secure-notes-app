@@ -51,6 +51,14 @@ Five tables: `users`, `sessions`, `notes`, `note_versions`, `audit_events`.
 - `users.email` is unique; `sessions.token_hash` is unique (lookup key for session auth).
 - `audit_events` has a composite index on `(resource_type, resource_id)` for resource-history queries.
 
+## Registration
+
+- Passwords are hashed with Argon2id (`@node-rs/argon2`, m = 19 MiB, t = 2, p = 1 — OWASP minimum config, pinned in `src/lib/auth/password.ts`).
+- Password rule: 12–128 characters, no composition requirements (NIST SP 800-63B), and it must not contain the signup email.
+- Emails are stored lowercased; uniqueness is exact-match.
+- Duplicate emails return a neutral, non-enumerating error identical whether or not the account exists. The password is hashed before the uniqueness check so response timing does not leak account existence.
+- Successful registration writes an `account.created` audit event. Registration never establishes a session.
+
 ## Learn More
 
 - [Next.js Documentation](https://nextjs.org/docs)

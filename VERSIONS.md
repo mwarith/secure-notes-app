@@ -7,7 +7,8 @@ Versions selected on 2026-08-30, per project's dependency version policy (no flo
 | Next.js             | latest stable at scaffold time (see package.json) | npx create-next-app@latest                                             |
 | Drizzle ORM         | 0.45.2                                            | latest stable at selection time (npm view drizzle-orm version)         |
 | drizzle-kit         | 0.31.10                                           | latest stable at selection time (npm view drizzle-kit version)         |
-| pg (node-postgres)  | 8.23.0                                            | latest stable at selection time (npm view pg version)                  |
+| pg (node-postgres) | 8.23.0 | latest stable at selection time (npm view pg version) |
+| ioredis | 6.0.0 | latest stable at selection time (npm view ioredis version) |
 | @node-rs/argon2     | 2.2.0                                             | latest stable at selection time (npm view @node-rs/argon2 version)     |
 | Vitest              | 4.1.11                                            | latest stable at selection time (npm view vitest version)              |
 | vite-tsconfig-paths | 6.1.1                                             | latest stable at selection time (npm view vite-tsconfig-paths version) |

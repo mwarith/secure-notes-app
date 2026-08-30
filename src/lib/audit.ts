@@ -7,8 +7,8 @@ export type DbExecutor =
 
 export type AuditEventInput = {
   actorUserId: string | null;
-  resourceType: string;
-  resourceId: string;
+  resourceType: string | null;
+  resourceId: string | null;
   action: string;
   metadata: Record<string, unknown>;
 };

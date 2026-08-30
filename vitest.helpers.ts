@@ -22,6 +22,13 @@ export function resolveTestDatabaseUrl(): string {
   return withDatabaseName(base, TEST_DB_NAME);
 }
 
+export function resolveTestValkeyUrl(): string {
+  const base = process.env.VALKEY_URL ?? "redis://localhost:6379";
+  const url = new URL(base);
+  url.pathname = "/15";
+  return url.toString();
+}
+
 export function resolveAdminDatabaseUrl(): string {
   return withDatabaseName(resolveTestDatabaseUrl(), "postgres");
 }

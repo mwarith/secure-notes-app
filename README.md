@@ -45,7 +45,7 @@ Five tables: `users`, `sessions`, `notes`, `note_versions`, `audit_events`.
 | `note_versions.note_id` → `notes.id` | `CASCADE` | Versions are owned snapshots with no meaning detached from their note. |
 | `sessions.user_id` → `users.id` | `CASCADE` | A deleted user must not have live sessions. |
 | `audit_events.actor_user_id` → `users.id` | `SET NULL` (nullable) | Audit history survives user deletion; the actor reference is nulled, the event remains. |
-| `audit_events.resource_type` / `resource_id` | no FK | Plain columns by design: deleting the referenced resource can never fail or erase the pointer, so audit rows stay queryable with the original resource id. |
+| `audit_events.resource_type` / `resource_id` | no FK, nullable | Plain columns by design: deleting the referenced resource can never fail or erase the pointer, so audit rows stay queryable with the original resource id. Null when the event describes no concrete resource (e.g. failed login for an unknown email). |
 
 - `note_versions` and `audit_events` are immutable: `created_at` only, no `updated_at`.
 - `users.email` is unique; `sessions.token_hash` is unique (lookup key for session auth).
@@ -58,6 +58,13 @@ Five tables: `users`, `sessions`, `notes`, `note_versions`, `audit_events`.
 - Emails are stored lowercased; uniqueness is exact-match.
 - Duplicate emails return a neutral, non-enumerating error identical whether or not the account exists. The password is hashed before the uniqueness check so response timing does not leak account existence.
 - Successful registration writes an `account.created` audit event. Registration never establishes a session.
+
+## Sessions
+
+- Sessions are 256-bit opaque tokens (`crypto.randomBytes(32)`, base64url) delivered in a `session` cookie: `httpOnly`, `sameSite=lax`, `path=/`, `maxAge=24h`, `secure` in production.
+- Session state lives in Valkey, keyed by `session:{sha256(token)}` with a 24h TTL — Valkey is authoritative, and expired or invalidated sessions are rejected on use. A durable row is kept in the Postgres `sessions` table (deleted on logout), enabling future "revoke all sessions" flows.
+- Login performs exactly one Argon2id operation per attempt: known emails verify the stored hash, unknown emails verify a precomputed dummy hash with the same cost parameters — response timing cannot reveal whether an email exists. All failures return the generic "Invalid email or password."
+- Audit events: `login.success`, `login.failed` (metadata carries only `method` and an `outcome`, never passwords/tokens/emails), `logout.success`. Logout invalidates the session server-side and is a safe no-op when no session exists.
 
 ## Learn More
 

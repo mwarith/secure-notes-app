@@ -8,6 +8,7 @@ import {
   createNoteForUser,
   getNoteForUser,
   listNotesForUser,
+  updateNoteForUser,
 } from "@/lib/notes";
 import { resolveTestDatabaseUrl } from "../../../../vitest.helpers";
 
@@ -281,5 +282,227 @@ describe("createNoteForUser (integration)", () => {
       await createNoteForUser("not-a-uuid", "Title", "content"),
     ).toEqual({ ok: false, reason: "invalid_user" });
     expect(await db.select().from(auditEvents)).toHaveLength(0);
+  });
+});
+
+describe("updateNoteForUser (integration)", () => {
+  async function seedNoteWithOldTimestamp(
+    userId: string,
+    title: string,
+    content: string,
+  ): Promise<string> {
+    const [note] = await db
+      .insert(notes)
+      .values({
+        userId,
+        title,
+        content,
+        updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      })
+      .returning({ id: notes.id });
+    return note.id;
+  }
+
+  it("updates both fields for the owner and bumps updatedAt", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(
+      userId,
+      "Old title",
+      "Old content",
+    );
+    const before = await getNoteForUser(userId, noteId);
+    if (!before) throw new Error("expected seeded note to be readable");
+
+    const updated = await updateNoteForUser(userId, noteId, {
+      title: "New title",
+      content: "New content",
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated?.id).toBe(noteId);
+    expect(updated?.userId).toBe(userId);
+    expect(updated?.title).toBe("New title");
+    expect(updated?.content).toBe("New content");
+    expect(updated?.updatedAt.getTime()).toBeGreaterThan(
+      before.updatedAt.getTime(),
+    );
+  });
+
+  it("fails as not-found when a different user updates someone else's note, leaving the note unchanged", async () => {
+    const ownerId = await seedUser("owner@example.com");
+    const attackerId = await seedUser("attacker@example.com");
+    const noteId = await seedNoteWithOldTimestamp(
+      ownerId,
+      "Owner's title",
+      "Owner's content",
+    );
+    const before = await getNoteForUser(ownerId, noteId);
+    if (!before) throw new Error("expected seeded note to be readable");
+
+    const result = await updateNoteForUser(attackerId, noteId, {
+      title: "Hacked",
+      content: "Hacked",
+    });
+
+    expect(result).toBeNull();
+    expect(await getNoteForUser(ownerId, noteId)).toEqual(before);
+    expect(await db.select().from(auditEvents)).toHaveLength(0);
+  });
+
+  it("returns not-found for a nonexistent but well-formed note id", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    expect(
+      await updateNoteForUser(userId, "00000000-0000-4000-8000-000000000000", {
+        title: "New title",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns not-found for malformed ids without a database error", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(userId, "T", "C");
+
+    expect(
+      await updateNoteForUser(userId, "not-a-uuid", { title: "X" }),
+    ).toBeNull();
+    expect(
+      await updateNoteForUser("not-a-uuid", noteId, { title: "X" }),
+    ).toBeNull();
+    expect(
+      await updateNoteForUser("not-a-uuid", "also-bad", { title: "X" }),
+    ).toBeNull();
+  });
+
+  it("updates only the title when only title is provided", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(
+      userId,
+      "Old title",
+      "Old content",
+    );
+    const before = await getNoteForUser(userId, noteId);
+    if (!before) throw new Error("expected seeded note to be readable");
+
+    const updated = await updateNoteForUser(userId, noteId, {
+      title: "New title",
+    });
+
+    expect(updated?.title).toBe("New title");
+    expect(updated?.content).toBe("Old content");
+    expect(updated?.updatedAt.getTime()).toBeGreaterThan(
+      before.updatedAt.getTime(),
+    );
+  });
+
+  it("updates only the content when only content is provided", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(
+      userId,
+      "Old title",
+      "Old content",
+    );
+    const before = await getNoteForUser(userId, noteId);
+    if (!before) throw new Error("expected seeded note to be readable");
+
+    const updated = await updateNoteForUser(userId, noteId, {
+      content: "New content",
+    });
+
+    expect(updated?.title).toBe("Old title");
+    expect(updated?.content).toBe("New content");
+    expect(updated?.updatedAt.getTime()).toBeGreaterThan(
+      before.updatedAt.getTime(),
+    );
+  });
+
+  it("stores values verbatim without trimming", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(userId, "T", "C");
+
+    const updated = await updateNoteForUser(userId, noteId, {
+      title: "  padded  ",
+      content: "  kept  ",
+    });
+
+    expect(updated?.title).toBe("  padded  ");
+    expect(updated?.content).toBe("  kept  ");
+  });
+
+  it("updates a note to fully blank title and content", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(userId, "T", "C");
+
+    const updated = await updateNoteForUser(userId, noteId, {
+      title: "",
+      content: "",
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated?.title).toBe("");
+    expect(updated?.content).toBe("");
+  });
+
+  it("treats non-string values in a provided key as absent", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(
+      userId,
+      "Old title",
+      "Old content",
+    );
+
+    const first = await updateNoteForUser(userId, noteId, {
+      title: "Typed",
+      content: 42 as unknown as string,
+    });
+    expect(first?.title).toBe("Typed");
+    expect(first?.content).toBe("Old content");
+
+    const second = await updateNoteForUser(userId, noteId, {
+      title: 42 as unknown as string,
+      content: "Typed",
+    });
+    expect(second?.title).toBe("Typed");
+    expect(second?.content).toBe("Typed");
+  });
+
+  it("is a no-op with no write, no updatedAt bump, and no audit when no field applies", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(
+      userId,
+      "Untouched",
+      "Untouched content",
+    );
+    const before = await getNoteForUser(userId, noteId);
+    if (!before) throw new Error("expected seeded note to be readable");
+
+    const emptyChanges = await updateNoteForUser(userId, noteId, {});
+    expect(emptyChanges).not.toBeNull();
+    expect(emptyChanges).toEqual(before);
+    expect(emptyChanges?.updatedAt).toEqual(before.updatedAt);
+
+    const nonStringOnly = await updateNoteForUser(userId, noteId, {
+      title: 123 as unknown as string,
+    });
+    expect(nonStringOnly).toEqual(before);
+
+    expect(await db.select().from(auditEvents)).toHaveLength(0);
+  });
+
+  it("writes a note.updated audit event in the same transaction as the update", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNoteWithOldTimestamp(userId, "T", "C");
+
+    const updated = await updateNoteForUser(userId, noteId, {
+      title: "Audited",
+    });
+    expect(updated).not.toBeNull();
+
+    const [event] = await db.select().from(auditEvents);
+    expect(event.action).toBe("note.updated");
+    expect(event.actorUserId).toBe(userId);
+    expect(event.resourceType).toBe("note");
+    expect(event.resourceId).toBe(noteId);
+    expect(event.metadata).toEqual({});
   });
 });

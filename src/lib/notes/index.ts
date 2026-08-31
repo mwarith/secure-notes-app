@@ -118,3 +118,67 @@ export async function createNoteForUser(
     return { ok: true, note };
   });
 }
+
+/**
+ * Updates an owned note through the same authorization boundary as the
+ * reads: a single UPDATE filtered by both note id and user id, with
+ * RETURNING providing the row. Zero rows means not-found and not-yours are
+ * indistinguishable — null is returned exactly as getNoteForUser would
+ * return it, and no existence probe ever runs.
+ *
+ * Only string-valued fields in changes are applied (partial update); a key
+ * holding a non-string value is treated as absent rather than coerced,
+ * since coercing on update would silently erase existing content. Values
+ * are stored verbatim — no trimming, unlike create. There is deliberately
+ * no blankness rule here: a note may be edited down to fully empty title
+ * and content (the empty_note rule is create-only).
+ *
+ * Changes that apply no field are an honest no-op: the current note is
+ * returned through the ownership-scoped read, with no write, no updatedAt
+ * bump, and no audit event. A successful update writes note.updated in the
+ * same transaction as the UPDATE, so a state change never lands without
+ * its audit record.
+ */
+export async function updateNoteForUser(
+  userId: string,
+  noteId: string,
+  changes: { title?: string; content?: string },
+): Promise<Note | null> {
+  if (!isUuid(userId) || !isUuid(noteId)) {
+    return null;
+  }
+
+  const updates: { title?: string; content?: string } = {};
+  if (typeof changes.title === "string") {
+    updates.title = changes.title;
+  }
+  if (typeof changes.content === "string") {
+    updates.content = changes.content;
+  }
+
+  if (updates.title === undefined && updates.content === undefined) {
+    return getNoteForUser(userId, noteId);
+  }
+
+  return db.transaction(async (tx) => {
+    const [note] = await tx
+      .update(notes)
+      .set(updates)
+      .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
+      .returning();
+
+    if (!note) {
+      return null;
+    }
+
+    await recordAuditEvent(tx, {
+      actorUserId: userId,
+      resourceType: "note",
+      resourceId: note.id,
+      action: "note.updated",
+      metadata: {},
+    });
+
+    return note;
+  });
+}

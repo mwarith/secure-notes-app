@@ -2,9 +2,13 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { eq, sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { notes, users } from "@/db/schema";
+import { auditEvents, notes, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
-import { getNoteForUser, listNotesForUser } from "@/lib/notes";
+import {
+  createNoteForUser,
+  getNoteForUser,
+  listNotesForUser,
+} from "@/lib/notes";
 import { resolveTestDatabaseUrl } from "../../../../vitest.helpers";
 
 const pool = new Pool({ connectionString: resolveTestDatabaseUrl() });
@@ -160,5 +164,122 @@ describe("listNotesForUser (integration)", () => {
 
   it("returns an empty list for a malformed user id without a database error", async () => {
     expect(await listNotesForUser("not-a-uuid")).toEqual([]);
+  });
+});
+
+describe("createNoteForUser (integration)", () => {
+  it("creates a note owned by the user, trimmed, and immediately retrievable", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    const result = await createNoteForUser(
+      userId,
+      "  My new note  ",
+      "Private content",
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.note.userId).toBe(userId);
+    expect(result.note.title).toBe("My new note");
+    expect(result.note.content).toBe("Private content");
+    expect(result.note.createdAt).toBeInstanceOf(Date);
+    expect(result.note.updatedAt).toBeInstanceOf(Date);
+
+    const retrieved = await getNoteForUser(userId, result.note.id);
+    expect(retrieved?.id).toBe(result.note.id);
+    expect(retrieved?.title).toBe("My new note");
+  });
+
+  it("shows the created note in the owner's list and nobody else's", async () => {
+    const userA = await seedUser("a@example.com");
+    const userB = await seedUser("b@example.com");
+
+    const result = await createNoteForUser(userA, "A's note", "content");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const listA = await listNotesForUser(userA);
+    const listB = await listNotesForUser(userB);
+
+    expect(listA.map((note) => note.id)).toEqual([result.note.id]);
+    expect(listB).toEqual([]);
+  });
+
+  it("allows a title-only note", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    const result = await createNoteForUser(userId, "Title only", "");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.note.title).toBe("Title only");
+    expect(result.note.content).toBe("");
+  });
+
+  it("allows a content-only note", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    const result = await createNoteForUser(userId, "   ", "Content only");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.note.title).toBe("");
+    expect(result.note.content).toBe("Content only");
+  });
+
+  it("treats missing or non-string fields as empty", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    const missingTitle = await createNoteForUser(userId, undefined, "content");
+    expect(missingTitle.ok).toBe(true);
+    if (!missingTitle.ok) return;
+    expect(missingTitle.note.title).toBe("");
+
+    const missingContent = await createNoteForUser(userId, "title", null);
+    expect(missingContent.ok).toBe(true);
+    if (!missingContent.ok) return;
+    expect(missingContent.note.content).toBe("");
+  });
+
+  it("writes a note.created audit event in the same transaction as the insert", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    const result = await createNoteForUser(userId, "Audited", "content");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [event] = await db.select().from(auditEvents);
+    expect(event.action).toBe("note.created");
+    expect(event.actorUserId).toBe(userId);
+    expect(event.resourceType).toBe("note");
+    expect(event.resourceId).toBe(result.note.id);
+    expect(event.metadata).toEqual({});
+  });
+
+  it("rejects a fully blank note as empty_note", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    expect(await createNoteForUser(userId, "", "")).toEqual({
+      ok: false,
+      reason: "empty_note",
+    });
+    expect(await createNoteForUser(userId, "   ", "   ")).toEqual({
+      ok: false,
+      reason: "empty_note",
+    });
+    expect(await createNoteForUser(userId, undefined, null)).toEqual({
+      ok: false,
+      reason: "empty_note",
+    });
+
+    expect(await listNotesForUser(userId)).toEqual([]);
+    expect(await db.select().from(auditEvents)).toHaveLength(0);
+  });
+
+  it("rejects a malformed user id as invalid_user without touching the database", async () => {
+    expect(
+      await createNoteForUser("not-a-uuid", "Title", "content"),
+    ).toEqual({ ok: false, reason: "invalid_user" });
+    expect(await db.select().from(auditEvents)).toHaveLength(0);
   });
 });

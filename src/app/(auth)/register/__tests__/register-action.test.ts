@@ -1,14 +1,30 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { eq, sql } from "drizzle-orm";
+import { Redis } from "ioredis";
 import { Pool } from "pg";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAction } from "@/app/(auth)/register/actions";
 import { auditEvents, sessions, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
-import { resolveTestDatabaseUrl } from "../../../../../vitest.helpers";
+import { valkey as appValkey } from "@/lib/valkey";
+import {
+  resolveTestDatabaseUrl,
+  resolveTestValkeyUrl,
+} from "../../../../../vitest.helpers";
+
+const { requestHeaders } = vi.hoisted(() => ({
+  requestHeaders: {
+    value: new Headers({ "x-forwarded-for": "203.0.113.5" }),
+  },
+}));
+
+vi.mock("next/headers", () => ({
+  headers: vi.fn(async () => requestHeaders.value),
+}));
 
 const pool = new Pool({ connectionString: resolveTestDatabaseUrl() });
 const db = drizzle(pool);
+const valkey = new Redis(resolveTestValkeyUrl());
 
 const DUPLICATE_MESSAGE =
   "Unable to create account with these details. If you already have an account, try signing in or resetting your password.";
@@ -23,13 +39,20 @@ function makeForm(email: FormDataEntryValue | null, password: FormDataEntryValue
 }
 
 afterAll(async () => {
-  await Promise.all([pool.end(), appPool.end()]);
+  await Promise.all([
+    pool.end(),
+    appPool.end(),
+    valkey.quit().catch(() => undefined),
+    appValkey.quit().catch(() => undefined),
+  ]);
 });
 
 beforeEach(async () => {
+  await valkey.flushdb();
   await db.execute(
     sql`TRUNCATE users, sessions, notes, note_versions, audit_events`,
   );
+  requestHeaders.value = new Headers({ "x-forwarded-for": "203.0.113.5" });
 });
 
 describe("registerAction (integration)", () => {

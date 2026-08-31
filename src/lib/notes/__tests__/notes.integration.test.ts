@@ -114,6 +114,7 @@ describe("listNotesForUser (integration)", () => {
       expect(note).toEqual({
         id: expect.any(String),
         title: expect.any(String),
+        content: expect.any(String),
         createdAt: expect.any(Date),
         updatedAt: expect.any(Date),
       });

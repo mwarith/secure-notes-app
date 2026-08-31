@@ -2,10 +2,11 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { eq, sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { auditEvents, notes, users } from "@/db/schema";
+import { auditEvents, noteVersions, notes, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import {
   createNoteForUser,
+  deleteNoteForUser,
   getNoteForUser,
   listNotesForUser,
   updateNoteForUser,
@@ -504,5 +505,75 @@ describe("updateNoteForUser (integration)", () => {
     expect(event.resourceType).toBe("note");
     expect(event.resourceId).toBe(noteId);
     expect(event.metadata).toEqual({});
+  });
+});
+
+describe("deleteNoteForUser (integration)", () => {
+  it("deletes the owner's note, cascades its versions, and writes a durable note.deleted audit event", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNote(userId, "Doomed", "Content");
+    await db
+      .insert(noteVersions)
+      .values({ noteId, title: "Doomed", content: "Content" });
+    await db
+      .insert(noteVersions)
+      .values({ noteId, title: "Doomed v2", content: "Content v2" });
+
+    const deleted = await deleteNoteForUser(userId, noteId);
+
+    expect(deleted).toBe(true);
+    expect(await getNoteForUser(userId, noteId)).toBeNull();
+    expect(
+      await db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)),
+    ).toEqual([]);
+
+    const [event] = await db.select().from(auditEvents);
+    expect(event.action).toBe("note.deleted");
+    expect(event.actorUserId).toBe(userId);
+    expect(event.resourceType).toBe("note");
+    expect(event.resourceId).toBe(noteId);
+    expect(event.metadata).toEqual({});
+  });
+
+  it("returns false and leaves the note fully unchanged when a different user attempts deletion", async () => {
+    const ownerId = await seedUser("owner@example.com");
+    const attackerId = await seedUser("attacker@example.com");
+    const noteId = await seedNote(ownerId, "Survivor", "Content");
+    await db
+      .insert(noteVersions)
+      .values({ noteId, title: "Survivor", content: "Content" });
+
+    const deleted = await deleteNoteForUser(attackerId, noteId);
+
+    expect(deleted).toBe(false);
+
+    const surviving = await getNoteForUser(ownerId, noteId);
+    expect(surviving?.title).toBe("Survivor");
+    expect(surviving?.content).toBe("Content");
+    expect(
+      await db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)),
+    ).toHaveLength(1);
+    expect(await db.select().from(auditEvents)).toHaveLength(0);
+  });
+
+  it("returns false for a well-formed nonexistent note id", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    expect(
+      await deleteNoteForUser(userId, "00000000-0000-4000-8000-000000000000"),
+    ).toBe(false);
+    expect(await db.select().from(auditEvents)).toHaveLength(0);
+  });
+
+  it("returns false for malformed ids without a database error", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNote(userId, "T", "C");
+
+    expect(await deleteNoteForUser(userId, "not-a-uuid")).toBe(false);
+    expect(await deleteNoteForUser("not-a-uuid", noteId)).toBe(false);
+    expect(await deleteNoteForUser("not-a-uuid", "also-bad")).toBe(false);
+
+    expect(await getNoteForUser(userId, noteId)).not.toBeNull();
+    expect(await db.select().from(auditEvents)).toHaveLength(0);
   });
 });

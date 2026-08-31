@@ -182,3 +182,49 @@ export async function updateNoteForUser(
     return note;
   });
 }
+
+/**
+ * Deletes an owned note through the same authorization boundary as the
+ * reads and updates: a single DELETE filtered by both note id and user id.
+ * Zero rows means not-found and not-yours are indistinguishable — both
+ * return false, and no existence probe ever runs. Malformed ids return
+ * false before the database is queried.
+ *
+ * The boolean return is deliberate: the caller never needs the deleted
+ * content (reads return Note | null, create returns a discriminated union,
+ * delete returns boolean). Note versions cascade through the
+ * note_versions foreign key (onDelete: cascade) — there is no manual
+ * version cleanup. The note.deleted audit event is written in the same
+ * transaction as the DELETE, so a delete never lands without its audit
+ * record; audit_events.resourceId has no foreign key, so the record
+ * remains queryable after the note and its versions are gone.
+ */
+export async function deleteNoteForUser(
+  userId: string,
+  noteId: string,
+): Promise<boolean> {
+  if (!isUuid(userId) || !isUuid(noteId)) {
+    return false;
+  }
+
+  return db.transaction(async (tx) => {
+    const deleted = await tx
+      .delete(notes)
+      .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
+      .returning({ id: notes.id });
+
+    if (deleted.length === 0) {
+      return false;
+    }
+
+    await recordAuditEvent(tx, {
+      actorUserId: userId,
+      resourceType: "note",
+      resourceId: noteId,
+      action: "note.deleted",
+      metadata: {},
+    });
+
+    return true;
+  });
+}

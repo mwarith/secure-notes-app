@@ -2,6 +2,10 @@
 
 The full product requirements are documented in `docs/PRD.md`. Read this before starting work on any ticket if you're unsure how a feature should behave, and cite the relevant PRD section when a design decision depends on it.
 
+## Domain vocabulary
+
+Shared terminology is defined in `CONTEXT.md` at the repo root (PRD §22). Use those exact terms in tickets, discussion, code, tests, and documentation.
+
 ## Audit event naming
 
 Audit event names use dot-style `<entity>.<event>` strings: `account.created`, `login.success`, `login.failed`, `logout.success`. Apply this convention to all new audit events; write them via `src/lib/audit.ts` and keep secrets, tokens, and passwords out of metadata.

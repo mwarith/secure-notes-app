@@ -76,6 +76,7 @@ export async function updateNoteAction(
   const noteId = formData.get("noteId");
   const title = formData.get("title");
   const content = formData.get("content");
+  const checkpoint = formData.get("checkpoint");
   const noteIdText = typeof noteId === "string" ? noteId : null;
 
   let session: Awaited<ReturnType<typeof getSession>>;
@@ -91,10 +92,15 @@ export async function updateNoteAction(
 
   let updatedNote: Awaited<ReturnType<typeof updateNoteForUser>>;
   try {
-    updatedNote = await updateNoteForUser(session.userId, noteIdText ?? "", {
-      title: typeof title === "string" ? title : undefined,
-      content: typeof content === "string" ? content : undefined,
-    });
+    updatedNote = await updateNoteForUser(
+      session.userId,
+      noteIdText ?? "",
+      {
+        title: typeof title === "string" ? title : undefined,
+        content: typeof content === "string" ? content : undefined,
+      },
+      { checkpoint: checkpoint === "true" },
+    );
   } catch {
     return transientSaveFailure(session.userId, noteIdText);
   }

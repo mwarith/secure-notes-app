@@ -18,12 +18,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { History } from "lucide-react";
 import { resolveEditorSave, type EditorFields } from "./editor-save-policy";
 import {
   resolveSaveIndicator,
   type SaveIndicatorState,
 } from "./save-indicator";
 import { updateNoteAction, type UpdateNoteFormState } from "./actions";
+import { NoteHistory } from "./note-history";
 import type { NoteSummary } from "@/lib/notes";
 
 const initialState: UpdateNoteFormState = { status: "idle" };
@@ -51,6 +53,7 @@ export function NoteEditorDialog({
     initialState,
   );
   const [open, setOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
   const [savedRecently, setSavedRecently] = useState(false);
@@ -192,6 +195,7 @@ export function NoteEditorDialog({
   function handleOpenChange(next: boolean) {
     if (next) {
       lastSavedRef.current = { title: note.title, content: note.content };
+      setHistoryOpen(false);
       setOpen(true);
       return;
     }
@@ -230,7 +234,19 @@ export function NoteEditorDialog({
       {children}
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Edit note</DialogTitle>
+          <div className="flex items-center justify-between">
+            <DialogTitle>Edit note</DialogTitle>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-pressed={historyOpen}
+              onClick={() => setHistoryOpen((current) => !current)}
+            >
+              <History className="size-4" aria-hidden />
+              History
+            </Button>
+          </div>
           <DialogDescription
             role="status"
             aria-live="polite"
@@ -239,6 +255,11 @@ export function NoteEditorDialog({
             {SAVE_INDICATOR_TEXT[indicator]}
           </DialogDescription>
         </DialogHeader>
+        {historyOpen && (
+          <div className="border-t pt-3">
+            <NoteHistory noteId={note.id} />
+          </div>
+        )}
         <form
           ref={formRef}
           action={formAction}

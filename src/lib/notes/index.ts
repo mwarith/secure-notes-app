@@ -1,7 +1,9 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { notes } from "@/db/schema";
+import { noteVersions, notes } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
+
+const VERSION_CHECKPOINT_MS = 5 * 60 * 1000;
 
 /**
  * Ownership-scoped Note reads (PRD §6, §15; CONTEXT.md "Ownership-scoped
@@ -140,11 +142,22 @@ export async function createNoteForUser(
  * bump, and no audit event. A successful update writes note.updated in the
  * same transaction as the UPDATE, so a state change never lands without
  * its audit record.
+ *
+ * When the update succeeds, a Note version snapshot may be captured in the
+ * same transaction (PRD §7). A version records a saved state: it stores the
+ * post-update title and content. The boundary rule — insert a version when
+ * no prior version exists for the note, or when the saved values differ
+ * exactly from the most recent version AND either the caller forced a
+ * checkpoint (the editor closing) or at least VERSION_CHECKPOINT_MS have
+ * passed since that version was created. Identical-value saves never
+ * snapshot, and routine snapshots write no audit event (restoration is
+ * ENG-23). Update, optional version, and audit commit or roll back together.
  */
 export async function updateNoteForUser(
   userId: string,
   noteId: string,
   changes: { title?: string; content?: string },
+  options?: { checkpoint?: boolean },
 ): Promise<Note | null> {
   if (!isUuid(userId) || !isUuid(noteId)) {
     return null;
@@ -171,6 +184,33 @@ export async function updateNoteForUser(
 
     if (!note) {
       return null;
+    }
+
+    const [lastVersion] = await tx
+      .select()
+      .from(noteVersions)
+      .where(eq(noteVersions.noteId, note.id))
+      .orderBy(desc(noteVersions.createdAt))
+      .limit(1);
+
+    let shouldSnapshot: boolean;
+    if (!lastVersion) {
+      shouldSnapshot = true;
+    } else {
+      const differs =
+        lastVersion.title !== note.title ||
+        lastVersion.content !== note.content;
+      const due =
+        Date.now() - lastVersion.createdAt.getTime() >= VERSION_CHECKPOINT_MS;
+      shouldSnapshot = differs && (options?.checkpoint === true || due);
+    }
+
+    if (shouldSnapshot) {
+      await tx.insert(noteVersions).values({
+        noteId: note.id,
+        title: note.title,
+        content: note.content,
+      });
     }
 
     await recordAuditEvent(tx, {

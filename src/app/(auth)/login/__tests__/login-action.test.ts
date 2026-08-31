@@ -11,16 +11,20 @@ import { getSession } from "@/lib/auth/session";
 import { loginAction, logoutAction } from "@/app/(auth)/login/actions";
 import { resolveTestDatabaseUrl, resolveTestValkeyUrl } from "../../../../../vitest.helpers";
 
-const { cookieStore } = vi.hoisted(() => ({
+const { cookieStore, requestHeaders } = vi.hoisted(() => ({
   cookieStore: {
     get: vi.fn(),
     set: vi.fn(),
     delete: vi.fn(),
   },
+  requestHeaders: {
+    value: new Headers({ "x-forwarded-for": "203.0.113.5" }),
+  },
 }));
 
 vi.mock("next/headers", () => ({
   cookies: vi.fn(async () => cookieStore),
+  headers: vi.fn(async () => requestHeaders.value),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -70,6 +74,7 @@ beforeEach(async () => {
   vi.mocked(cookieStore.set).mockReset();
   vi.mocked(cookieStore.delete).mockReset();
   vi.mocked(redirect).mockReset();
+  requestHeaders.value = new Headers({ "x-forwarded-for": "203.0.113.5" });
 });
 
 describe("loginAction (integration)", () => {

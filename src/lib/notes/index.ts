@@ -27,6 +27,8 @@ const VERSION_CHECKPOINT_MS = 5 * 60 * 1000;
 
 export type Note = typeof notes.$inferSelect;
 
+export type NoteVersion = typeof noteVersions.$inferSelect;
+
 export type NoteSummary = {
   id: string;
   title: string;
@@ -79,6 +81,35 @@ export async function listNotesForUser(userId: string): Promise<NoteSummary[]> {
     .from(notes)
     .where(eq(notes.userId, userId))
     .orderBy(desc(notes.updatedAt));
+}
+
+/**
+ * Lists a Note's versions through the same ownership-scoped boundary as the
+ * reads: a single join filtered by both the note id and the session user's
+ * id, newest first (PRD §7). An empty list means the note has no versions or
+ * is not the caller's — denied and no-versions are indistinguishable, the
+ * list convention. Malformed ids are rejected before the database sees them.
+ */
+export async function listNoteVersionsForUser(
+  userId: string,
+  noteId: string,
+): Promise<NoteVersion[]> {
+  if (!isUuid(userId) || !isUuid(noteId)) {
+    return [];
+  }
+
+  return db
+    .select({
+      id: noteVersions.id,
+      noteId: noteVersions.noteId,
+      title: noteVersions.title,
+      content: noteVersions.content,
+      createdAt: noteVersions.createdAt,
+    })
+    .from(noteVersions)
+    .innerJoin(notes, eq(noteVersions.noteId, notes.id))
+    .where(and(eq(noteVersions.noteId, noteId), eq(notes.userId, userId)))
+    .orderBy(desc(noteVersions.createdAt));
 }
 
 /**

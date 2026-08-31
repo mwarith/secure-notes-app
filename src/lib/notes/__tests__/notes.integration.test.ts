@@ -9,6 +9,7 @@ import {
   deleteNoteForUser,
   getNoteForUser,
   listNotesForUser,
+  listNoteVersionsForUser,
   updateNoteForUser,
 } from "@/lib/notes";
 import { resolveTestDatabaseUrl } from "../../../../vitest.helpers";
@@ -672,6 +673,85 @@ describe("updateNoteForUser version checkpoints (integration)", () => {
     const second = await listVersions(secondNoteId);
     expect(second).toHaveLength(1);
     expect(second[0]?.title).toBe("Also first");
+  });
+});
+
+describe("listNoteVersionsForUser (integration)", () => {
+  it("lists the owner's versions newest-first with full fields", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNote(userId, "V1 title", "V1 content");
+
+    await updateNoteForUser(
+      userId,
+      noteId,
+      { title: "V2 title", content: "V2 content" },
+      { checkpoint: true },
+    );
+    await db
+      .update(noteVersions)
+      .set({ createdAt: new Date(Date.now() - 6 * 60 * 1000) })
+      .where(eq(noteVersions.noteId, noteId));
+    await updateNoteForUser(userId, noteId, {
+      title: "V3 title",
+      content: "V3 content",
+    });
+
+    const versions = await listNoteVersionsForUser(userId, noteId);
+
+    expect(versions).toHaveLength(2);
+    expect(versions[0]?.title).toBe("V3 title");
+    expect(versions[0]?.content).toBe("V3 content");
+    expect(versions[0]?.createdAt.getTime()).toBeGreaterThan(
+      versions[1]?.createdAt.getTime() ?? Infinity,
+    );
+    expect(versions[1]?.title).toBe("V2 title");
+    expect(versions[1]?.content).toBe("V2 content");
+    for (const version of versions) {
+      expect(version.noteId).toBe(noteId);
+      expect(version.id).toEqual(expect.any(String));
+      expect(version.createdAt).toBeInstanceOf(Date);
+    }
+  });
+
+  it("returns an empty list for another user's note", async () => {
+    const ownerId = await seedUser("owner@example.com");
+    const attackerId = await seedUser("attacker@example.com");
+    const noteId = await seedNote(ownerId, "Private", "Private content");
+    await updateNoteForUser(
+      ownerId,
+      noteId,
+      { title: "Private v2", content: "Private content v2" },
+      { checkpoint: true },
+    );
+
+    expect(await listNoteVersionsForUser(attackerId, noteId)).toEqual([]);
+  });
+
+  it("returns an empty list for a nonexistent but well-formed note id", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    expect(
+      await listNoteVersionsForUser(
+        userId,
+        "00000000-0000-4000-8000-000000000000",
+      ),
+    ).toEqual([]);
+  });
+
+  it("returns an empty list for malformed ids without a database error", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNote(userId, "T", "C");
+
+    expect(await listNoteVersionsForUser(userId, "not-a-uuid")).toEqual([]);
+    expect(await listNoteVersionsForUser("not-a-uuid", noteId)).toEqual([]);
+    expect(await listNoteVersionsForUser("not-a-uuid", "also-bad")).toEqual([]);
+  });
+
+  it("returns an empty list for a note without versions", async () => {
+    const userId = await seedUser("owner@example.com");
+    const noteId = await seedNote(userId, "T", "C");
+
+    expect(await listNoteVersionsForUser(userId, noteId)).toEqual([]);
   });
 });
 

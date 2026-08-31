@@ -11,8 +11,8 @@ A private document containing a title and content, owned by exactly one user. No
 _Avoid_: document, item, record
 
 **Note version**:
-An immutable snapshot of a note's title and content captured at a meaningful moment — never per keystroke. Restoring one appends to history rather than overwriting it.
-_Avoid_: revision, history entry, backup
+A saved state of a note — its title and content exactly as a save landed — captured after the update, at a meaningful boundary and never per keystroke. The boundary is the editor closing, or at most once every five minutes while editing; a save identical to the most recent version never creates a new one. The version history is separate from the Audit log: it answers "what did the note say", not "who did what" (PRD §7). Restoring one appends to history rather than overwriting it.
+_Avoid_: revision, history entry, backup, checkpoint log
 
 **Autosave**:
 The client mechanism that persists note edits automatically while the user works, surfacing saving / saved / save-failed states. It must never silently discard work, and it must not flood history with a new Note version per keystroke.

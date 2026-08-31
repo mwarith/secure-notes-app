@@ -4,7 +4,12 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
-import { createNoteForUser, updateNoteForUser } from "@/lib/notes";
+import {
+  createNoteForUser,
+  listNoteVersionsForUser,
+  updateNoteForUser,
+  type NoteVersion,
+} from "@/lib/notes";
 import { log } from "@/lib/logger";
 import { incrementCounter } from "@/lib/metrics";
 
@@ -112,4 +117,22 @@ export async function updateNoteAction(
   }
 
   return { status: "success" };
+}
+
+export async function listNoteVersionsAction(
+  noteId: unknown,
+): Promise<NoteVersion[]> {
+  const cookieStore = await cookies();
+  const session = await getSession(
+    cookieStore.get(SESSION_COOKIE_NAME)?.value,
+  );
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  return listNoteVersionsForUser(
+    session.userId,
+    typeof noteId === "string" ? noteId : "",
+  );
 }

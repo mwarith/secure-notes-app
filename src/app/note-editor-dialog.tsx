@@ -18,12 +18,25 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { resolveEditorSave, type EditorFields } from "./editor-save-policy";
+import {
+  resolveSaveIndicator,
+  type SaveIndicatorState,
+} from "./save-indicator";
 import { updateNoteAction, type UpdateNoteFormState } from "./actions";
 import type { NoteSummary } from "@/lib/notes";
 
 const initialState: UpdateNoteFormState = { status: "idle" };
 
 const AUTOSAVE_DELAY_MS = 2000;
+
+const SAVED_INDICATOR_MS = 2500;
+
+const SAVE_INDICATOR_TEXT: Record<SaveIndicatorState, string> = {
+  saving: "Saving…",
+  saved: "Saved",
+  failed: "Save failed",
+  idle: "Changes save when you close the editor.",
+};
 
 export function NoteEditorDialog({
   note,
@@ -39,6 +52,7 @@ export function NoteEditorDialog({
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
+  const [savedRecently, setSavedRecently] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const fieldsRef = useRef<EditorFields>({
     title: note.title,
@@ -53,6 +67,9 @@ export function NoteEditorDialog({
   const closeIntentRef = useRef(false);
   const statusRef = useRef(state.status);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savedIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   useEffect(() => {
     statusRef.current = state.status;
@@ -65,6 +82,14 @@ export function NoteEditorDialog({
       failedAttemptRef.current = null;
       if (snapshot) {
         lastSavedRef.current = snapshot;
+        setSavedRecently(true);
+        if (savedIndicatorTimerRef.current !== null) {
+          clearTimeout(savedIndicatorTimerRef.current);
+        }
+        savedIndicatorTimerRef.current = setTimeout(() => {
+          savedIndicatorTimerRef.current = null;
+          setSavedRecently(false);
+        }, SAVED_INDICATOR_MS);
       }
       if (closeIntentRef.current) {
         closeIntentRef.current = false;
@@ -73,10 +98,15 @@ export function NoteEditorDialog({
           fieldsRef.current.title === snapshot.title &&
           fieldsRef.current.content === snapshot.content
         ) {
+          setSavedRecently(false);
           setOpen(false);
         }
       }
-      return;
+      return () => {
+        if (savedIndicatorTimerRef.current !== null) {
+          clearTimeout(savedIndicatorTimerRef.current);
+        }
+      };
     }
     if (state.status === "error") {
       failedAttemptRef.current = snapshotRef.current;
@@ -88,6 +118,7 @@ export function NoteEditorDialog({
     if (snapshotRef.current) return;
     snapshotRef.current = { ...fieldsRef.current };
     closeIntentRef.current = closeIntent;
+    setSavedRecently(false);
     formRef.current?.requestSubmit();
   }, []);
 
@@ -156,6 +187,7 @@ export function NoteEditorDialog({
     if (decision === "abandon") {
       handleTitleChange(note.title);
       handleContentChange(note.content);
+      setSavedRecently(false);
       setOpen(false);
       return;
     }
@@ -163,8 +195,15 @@ export function NoteEditorDialog({
       dispatchSave(true);
       return;
     }
+    setSavedRecently(false);
     setOpen(false);
   }
+
+  const indicator = resolveSaveIndicator({
+    pending,
+    status: state.status,
+    savedRecently,
+  });
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -172,8 +211,12 @@ export function NoteEditorDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Edit note</DialogTitle>
-          <DialogDescription>
-            {pending ? "Saving…" : "Changes save when you close the editor."}
+          <DialogDescription
+            role="status"
+            aria-live="polite"
+            className={indicator === "failed" ? "text-destructive" : undefined}
+          >
+            {SAVE_INDICATOR_TEXT[indicator]}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -184,6 +227,7 @@ export function NoteEditorDialog({
             if (snapshotRef.current) return;
             snapshotRef.current = { ...fieldsRef.current };
             closeIntentRef.current = false;
+            setSavedRecently(false);
           }}
         >
           <input type="hidden" name="noteId" value={note.id} />

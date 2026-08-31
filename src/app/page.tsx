@@ -16,9 +16,21 @@ export const metadata: Metadata = {
 
 export default async function WorkspacePage() {
   const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
+
+  let session: Awaited<ReturnType<typeof getSession>>;
+  try {
+    session = await getSession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
+  } catch {
+    return (
+      <main className="flex min-h-svh flex-col items-center justify-center gap-2 p-4 text-center">
+        <p className="font-semibold">Secure Notes is temporarily unavailable</p>
+        <p className="text-muted-foreground text-sm">
+          We couldn&apos;t reach our services. Your saved notes are safe — please try
+          again in a moment.
+        </p>
+      </main>
+    );
+  }
 
   if (!session) {
     redirect("/login");

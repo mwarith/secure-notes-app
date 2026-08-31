@@ -162,6 +162,7 @@ describe("updateNoteAction (integration)", () => {
 
     expect(state).toEqual({
       status: "error",
+      retryable: false,
       message: "This note is no longer available.",
     });
     expect(revalidatePath).toHaveBeenCalledWith("/");
@@ -182,6 +183,7 @@ describe("updateNoteAction (integration)", () => {
     );
     expect(malformed).toEqual({
       status: "error",
+      retryable: false,
       message: "This note is no longer available.",
     });
 
@@ -191,6 +193,7 @@ describe("updateNoteAction (integration)", () => {
     );
     expect(missing).toEqual({
       status: "error",
+      retryable: false,
       message: "This note is no longer available.",
     });
 

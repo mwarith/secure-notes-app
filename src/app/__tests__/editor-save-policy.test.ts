@@ -126,4 +126,35 @@ describe("resolveEditorSave", () => {
       ),
     ).toBe("ignore");
   });
+
+  it("submits on retry unless pending, bypassing dirty and unchanged-since-failure checks", () => {
+    expect(
+      resolveEditorSave(
+        makeInput({
+          trigger: "retry",
+          fields: { ...saved },
+          failedAttempt: { ...saved },
+        }),
+      ),
+    ).toBe("submit");
+    expect(
+      resolveEditorSave(
+        makeInput({
+          trigger: "retry",
+          status: "error",
+          fields: { ...saved },
+          failedAttempt: { ...saved },
+        }),
+      ),
+    ).toBe("submit");
+    expect(
+      resolveEditorSave(
+        makeInput({
+          trigger: "retry",
+          pending: true,
+          fields: { title: "Typed", content: "Typed" },
+        }),
+      ),
+    ).toBe("ignore");
+  });
 });

@@ -8,6 +8,7 @@ import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { listNotesForUser } from "@/lib/notes";
 import { CreateNoteDialog } from "./create-note-dialog";
 import { NoteCard } from "./note-card";
+import { NoteEditorDialog } from "./note-editor-dialog";
 
 export const metadata: Metadata = {
   title: "Secure Notes",
@@ -67,7 +68,9 @@ export default async function WorkspacePage() {
         ) : (
           <ul className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {notes.map((note) => (
-              <NoteCard key={note.id} note={note} />
+              <NoteEditorDialog key={note.id} note={note}>
+                <NoteCard note={note} />
+              </NoteEditorDialog>
             ))}
           </ul>
         )}

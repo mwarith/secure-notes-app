@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { sessions } from "@/db/schema";
 import { db } from "@/db";
+import { log } from "@/lib/logger";
 import { valkey } from "@/lib/valkey";
 
 export const SESSION_TTL_SECONDS = 60 * 60 * 24;
@@ -56,7 +57,18 @@ export async function getSession(
   if (!token) {
     return null;
   }
-  const raw = await valkey.get(sessionKey(hashSessionToken(token)));
+  const tokenHash = hashSessionToken(token);
+  let raw: string | null;
+  try {
+    raw = await valkey.get(sessionKey(tokenHash));
+  } catch {
+    // Valkey unreachable: verify against the durable Postgres row instead
+    // (PRD §18 — the cache must not become a single point of failure for
+    // durable data). A Valkey MISS above stays authoritative (null); only
+    // an ERROR falls back here.
+    log("warn", "session.valkey_unavailable_durable_fallback");
+    return getSessionFromDurableRow(tokenHash);
+  }
   if (!raw) {
     return null;
   }
@@ -74,6 +86,26 @@ export async function getSession(
   }
 }
 
+async function getSessionFromDurableRow(
+  tokenHash: string,
+): Promise<SessionData | null> {
+  const [row] = await db
+    .select()
+    .from(sessions)
+    .where(
+      and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, new Date())),
+    )
+    .limit(1);
+  if (!row) {
+    return null;
+  }
+  return {
+    userId: row.userId,
+    createdAt: row.createdAt.toISOString(),
+    expiresAt: row.expiresAt.toISOString(),
+  };
+}
+
 export async function destroySession(
   token: string | undefined | null,
 ): Promise<void> {
@@ -81,6 +113,12 @@ export async function destroySession(
     return;
   }
   const tokenHash = hashSessionToken(token);
-  await valkey.del(sessionKey(tokenHash));
+  try {
+    await valkey.del(sessionKey(tokenHash));
+  } catch {
+    // Best-effort: the Valkey entry is TTL-bounded, so a dangling entry
+    // expires on its own. The durable row and the cleared cookie are what
+    // actually end the session.
+  }
   await db.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
 }

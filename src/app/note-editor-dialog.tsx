@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -169,6 +170,18 @@ export function NoteEditorDialog({
     if (decision === "submit") dispatchSave(false);
   }
 
+  function handleRetry() {
+    const decision = resolveEditorSave({
+      trigger: "retry",
+      pending: snapshotRef.current !== null,
+      status: state.status,
+      fields: fieldsRef.current,
+      lastSaved: lastSavedRef.current,
+      failedAttempt: failedAttemptRef.current,
+    });
+    if (decision === "submit") dispatchSave(false);
+  }
+
   function handleOpenChange(next: boolean) {
     if (next) {
       lastSavedRef.current = { title: note.title, content: note.content };
@@ -233,6 +246,11 @@ export function NoteEditorDialog({
           <input type="hidden" name="noteId" value={note.id} />
           {state.status === "error" && (
             <p className="text-destructive text-sm">{state.message}</p>
+          )}
+          {state.status === "error" && state.retryable && (
+            <Button type="button" variant="outline" onClick={handleRetry}>
+              Retry
+            </Button>
           )}
           <div className="space-y-2">
             <Label htmlFor="note-title">Title</Label>

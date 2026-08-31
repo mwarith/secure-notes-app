@@ -1,4 +1,4 @@
-export type SaveTrigger = "close" | "debounce" | "blur";
+export type SaveTrigger = "close" | "debounce" | "blur" | "retry";
 
 export type SaveDecision = "ignore" | "submit" | "abandon" | "close";
 
@@ -17,6 +17,9 @@ export type EditorFields = { title: string; content: string };
  *   Otherwise dirty against lastSaved → "submit", clean → "close".
  * - "debounce"/"blur": dirty → "submit", clean → "ignore". The save status
  *   is deliberately not consulted for these triggers.
+ * - "retry": explicit user retry after a shown failure → always "submit"
+ *   when not pending; bypasses the unchanged-since-failure and dirty checks
+ *   because the user, not a timer, is asking for the attempt.
  *
  * WHY the dirty checks live here: updateNoteForUser stores values verbatim
  * and treats an identical-value write as a real write (updatedAt bump plus a
@@ -34,6 +37,10 @@ export function resolveEditorSave(input: {
 }): SaveDecision {
   if (input.pending) {
     return "ignore";
+  }
+
+  if (input.trigger === "retry") {
+    return "submit";
   }
 
   const dirty =

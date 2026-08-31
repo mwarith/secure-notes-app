@@ -5,6 +5,8 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { createNoteForUser, updateNoteForUser } from "@/lib/notes";
+import { log } from "@/lib/logger";
+import { incrementCounter } from "@/lib/metrics";
 
 export type CreateNoteFormState =
   | { status: "idle" }
@@ -48,40 +50,59 @@ export async function createNoteAction(
 export type UpdateNoteFormState =
   | { status: "idle" }
   | { status: "success" }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; retryable: boolean };
 
 const NOTE_UNAVAILABLE_MESSAGE = "This note is no longer available.";
+const TRANSIENT_SAVE_FAILURE_MESSAGE = "Couldn't save right now. Try again.";
+
+function transientSaveFailure(
+  userId: string | null,
+  noteId: string | null,
+): UpdateNoteFormState {
+  log("error", "autosave.save_failed", { userId, noteId });
+  incrementCounter("autosave_failures_total");
+  return {
+    status: "error",
+    retryable: true,
+    message: TRANSIENT_SAVE_FAILURE_MESSAGE,
+  };
+}
 
 export async function updateNoteAction(
   _prevState: UpdateNoteFormState,
   formData: FormData,
 ): Promise<UpdateNoteFormState> {
   const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
+  const noteId = formData.get("noteId");
+  const title = formData.get("title");
+  const content = formData.get("content");
+  const noteIdText = typeof noteId === "string" ? noteId : null;
+
+  let session: Awaited<ReturnType<typeof getSession>>;
+  try {
+    session = await getSession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
+  } catch {
+    return transientSaveFailure(null, noteIdText);
+  }
 
   if (!session) {
     redirect("/login");
   }
 
-  const noteId = formData.get("noteId");
-  const title = formData.get("title");
-  const content = formData.get("content");
-
-  const updatedNote = await updateNoteForUser(
-    session.userId,
-    typeof noteId === "string" ? noteId : "",
-    {
+  let updatedNote: Awaited<ReturnType<typeof updateNoteForUser>>;
+  try {
+    updatedNote = await updateNoteForUser(session.userId, noteIdText ?? "", {
       title: typeof title === "string" ? title : undefined,
       content: typeof content === "string" ? content : undefined,
-    },
-  );
+    });
+  } catch {
+    return transientSaveFailure(session.userId, noteIdText);
+  }
 
   revalidatePath("/");
 
   if (!updatedNote) {
-    return { status: "error", message: NOTE_UNAVAILABLE_MESSAGE };
+    return { status: "error", retryable: false, message: NOTE_UNAVAILABLE_MESSAGE };
   }
 
   return { status: "success" };

@@ -28,6 +28,7 @@ export type Note = typeof notes.$inferSelect;
 export type NoteSummary = {
   id: string;
   title: string;
+  content: string;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -69,6 +70,7 @@ export async function listNotesForUser(userId: string): Promise<NoteSummary[]> {
     .select({
       id: notes.id,
       title: notes.title,
+      content: notes.content,
       createdAt: notes.createdAt,
       updatedAt: notes.updatedAt,
     })

@@ -2,6 +2,7 @@
 
 import {
   type ReactNode,
+  useCallback,
   useEffect,
   useActionState,
   useRef,
@@ -16,10 +17,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { resolveEditorSave, type EditorFields } from "./editor-save-policy";
 import { updateNoteAction, type UpdateNoteFormState } from "./actions";
 import type { NoteSummary } from "@/lib/notes";
 
 const initialState: UpdateNoteFormState = { status: "idle" };
+
+const AUTOSAVE_DELAY_MS = 2000;
 
 export function NoteEditorDialog({
   note,
@@ -36,30 +40,127 @@ export function NoteEditorDialog({
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
   const formRef = useRef<HTMLFormElement>(null);
+  const fieldsRef = useRef<EditorFields>({
+    title: note.title,
+    content: note.content,
+  });
+  const lastSavedRef = useRef<EditorFields>({
+    title: note.title,
+    content: note.content,
+  });
+  const snapshotRef = useRef<EditorFields | null>(null);
+  const failedAttemptRef = useRef<EditorFields | null>(null);
+  const closeIntentRef = useRef(false);
+  const statusRef = useRef(state.status);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const dirty = title !== note.title || content !== note.content;
+  useEffect(() => {
+    statusRef.current = state.status;
+  }, [state]);
 
   useEffect(() => {
     if (state.status === "success") {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- closing on server-action completion is external-system sync, not a state cascade
-      setOpen(false);
+      const snapshot = snapshotRef.current;
+      snapshotRef.current = null;
+      failedAttemptRef.current = null;
+      if (snapshot) {
+        lastSavedRef.current = snapshot;
+      }
+      if (closeIntentRef.current) {
+        closeIntentRef.current = false;
+        if (
+          snapshot &&
+          fieldsRef.current.title === snapshot.title &&
+          fieldsRef.current.content === snapshot.content
+        ) {
+          setOpen(false);
+        }
+      }
+      return;
+    }
+    if (state.status === "error") {
+      failedAttemptRef.current = snapshotRef.current;
+      snapshotRef.current = null;
     }
   }, [state]);
 
+  const dispatchSave = useCallback((closeIntent: boolean) => {
+    if (snapshotRef.current) return;
+    snapshotRef.current = { ...fieldsRef.current };
+    closeIntentRef.current = closeIntent;
+    formRef.current?.requestSubmit();
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = setTimeout(() => {
+      autosaveTimerRef.current = null;
+      const decision = resolveEditorSave({
+        trigger: "debounce",
+        pending: snapshotRef.current !== null,
+        status: statusRef.current,
+        fields: fieldsRef.current,
+        lastSaved: lastSavedRef.current,
+        failedAttempt: failedAttemptRef.current,
+      });
+      if (decision === "submit") dispatchSave(false);
+    }, AUTOSAVE_DELAY_MS);
+    autosaveTimerRef.current = timer;
+    return () => {
+      clearTimeout(timer);
+      autosaveTimerRef.current = null;
+    };
+  }, [title, content, open, dispatchSave]);
+
+  function handleTitleChange(value: string) {
+    fieldsRef.current = { ...fieldsRef.current, title: value };
+    setTitle(value);
+  }
+
+  function handleContentChange(value: string) {
+    fieldsRef.current = { ...fieldsRef.current, content: value };
+    setContent(value);
+  }
+
+  function handleFieldBlur() {
+    if (autosaveTimerRef.current !== null) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const decision = resolveEditorSave({
+      trigger: "blur",
+      pending: snapshotRef.current !== null,
+      status: state.status,
+      fields: fieldsRef.current,
+      lastSaved: lastSavedRef.current,
+      failedAttempt: failedAttemptRef.current,
+    });
+    if (decision === "submit") dispatchSave(false);
+  }
+
   function handleOpenChange(next: boolean) {
     if (next) {
+      lastSavedRef.current = { title: note.title, content: note.content };
       setOpen(true);
       return;
     }
-    if (pending) return;
-    if (state.status === "error") {
-      setTitle(note.title);
-      setContent(note.content);
+    const decision = resolveEditorSave({
+      trigger: "close",
+      pending: snapshotRef.current !== null,
+      status: state.status,
+      fields: fieldsRef.current,
+      lastSaved: lastSavedRef.current,
+      failedAttempt: failedAttemptRef.current,
+    });
+    if (decision === "ignore") return;
+    if (decision === "abandon") {
+      handleTitleChange(note.title);
+      handleContentChange(note.content);
       setOpen(false);
       return;
     }
-    if (dirty) {
-      formRef.current?.requestSubmit();
+    if (decision === "submit") {
+      dispatchSave(true);
       return;
     }
     setOpen(false);
@@ -75,7 +176,16 @@ export function NoteEditorDialog({
             {pending ? "Saving…" : "Changes save when you close the editor."}
           </DialogDescription>
         </DialogHeader>
-        <form ref={formRef} action={formAction} className="space-y-4">
+        <form
+          ref={formRef}
+          action={formAction}
+          className="space-y-4"
+          onSubmit={() => {
+            if (snapshotRef.current) return;
+            snapshotRef.current = { ...fieldsRef.current };
+            closeIntentRef.current = false;
+          }}
+        >
           <input type="hidden" name="noteId" value={note.id} />
           {state.status === "error" && (
             <p className="text-destructive text-sm">{state.message}</p>
@@ -87,7 +197,8 @@ export function NoteEditorDialog({
               name="title"
               autoComplete="off"
               value={title}
-              onChange={(event) => setTitle(event.target.value)}
+              onChange={(event) => handleTitleChange(event.target.value)}
+              onBlur={handleFieldBlur}
             />
           </div>
           <div className="space-y-2">
@@ -97,7 +208,8 @@ export function NoteEditorDialog({
               name="content"
               rows={12}
               value={content}
-              onChange={(event) => setContent(event.target.value)}
+              onChange={(event) => handleContentChange(event.target.value)}
+              onBlur={handleFieldBlur}
               className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 flex min-h-16 w-full rounded-lg border bg-transparent px-2.5 py-2 text-base transition-colors outline-none focus-visible:ring-3 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30"
             />
           </div>

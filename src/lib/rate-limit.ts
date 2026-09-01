@@ -71,6 +71,11 @@ export const REGISTER_RATE_LIMIT: RateLimitConfig = {
   windowSeconds: 60 * 60,
 };
 
+export const TOTP_CONFIRM_RATE_LIMIT: RateLimitConfig = {
+  limit: 5,
+  windowSeconds: 15 * 60,
+};
+
 export const RATE_LIMITED_MESSAGE = "Too many attempts. Please try again later.";
 
 export type RateLimitResult =
@@ -96,6 +101,10 @@ export function loginRateLimitKey(ip: string, email: unknown): string {
 
 export function registerRateLimitKey(ip: string): string {
   return `rl:register:v1:${sha256(ip)}`;
+}
+
+export function totpConfirmRateLimitKey(userId: string): string {
+  return `rl:totp-confirm:v1:${sha256(userId)}`;
 }
 
 export async function consumeRateLimit(
@@ -196,5 +205,33 @@ export async function resetLoginRateLimit(
     await resetRateLimit(store, loginRateLimitKey(input.ip, input.email));
   } catch (error) {
     logFailOpen("login", error);
+  }
+}
+
+export async function checkTotpConfirmLimit(
+  store: RateLimitStore,
+  input: { userId: string },
+  config: RateLimitConfig = TOTP_CONFIRM_RATE_LIMIT,
+): Promise<RateLimitGate> {
+  try {
+    return await consumeRateLimit(
+      store,
+      totpConfirmRateLimitKey(input.userId),
+      config,
+    );
+  } catch (error) {
+    logFailOpen("totp confirmation", error);
+    return null;
+  }
+}
+
+export async function resetTotpConfirmLimit(
+  store: RateLimitStore,
+  input: { userId: string },
+): Promise<void> {
+  try {
+    await resetRateLimit(store, totpConfirmRateLimitKey(input.userId));
+  } catch (error) {
+    logFailOpen("totp confirmation", error);
   }
 }

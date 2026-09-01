@@ -3,8 +3,10 @@ import {
   LOGIN_RATE_LIMIT,
   RATE_LIMITED_MESSAGE,
   REGISTER_RATE_LIMIT,
+  TOTP_CONFIRM_RATE_LIMIT,
   checkLoginRateLimit,
   checkRegisterRateLimit,
+  checkTotpConfirmLimit,
   consumeRateLimit,
   loginRateLimitKey,
   refundRateLimit,
@@ -12,6 +14,8 @@ import {
   registerRateLimitKey,
   resetLoginRateLimit,
   resetRateLimit,
+  resetTotpConfirmLimit,
+  totpConfirmRateLimitKey,
   type RateLimitStore,
 } from "../rate-limit";
 
@@ -284,6 +288,82 @@ describe("fail-open wrappers", () => {
       resetLoginRateLimit(brokenStore(), {
         ip: "1.2.3.4",
         email: "user@example.com",
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("totp confirm limiter", () => {
+  it("allows 5 confirmation attempts per 15 minutes per user", () => {
+    expect(TOTP_CONFIRM_RATE_LIMIT).toEqual({ limit: 5, windowSeconds: 900 });
+  });
+
+  it("keys one bucket per user without exposing the raw id", () => {
+    const key = totpConfirmRateLimitKey(
+      "00000000-0000-4000-8000-000000000001",
+    );
+
+    expect(key).toBe(
+      totpConfirmRateLimitKey("00000000-0000-4000-8000-000000000001"),
+    );
+    expect(key).not.toBe(
+      totpConfirmRateLimitKey("00000000-0000-4000-8000-000000000002"),
+    );
+    expect(key).not.toContain("00000000-0000-4000-8000-000000000001");
+  });
+
+  it("counts attempts, blocks the 6th, and resets on success", async () => {
+    const store = makeFakeStore();
+    const userId = "00000000-0000-4000-8000-000000000001";
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(await checkTotpConfirmLimit(store, { userId })).toEqual({
+        allowed: true,
+        remaining: 4 - i,
+      });
+    }
+    expect(await checkTotpConfirmLimit(store, { userId })).toEqual({
+      allowed: false,
+      retryAfterSeconds: TOTP_CONFIRM_RATE_LIMIT.windowSeconds,
+    });
+
+    await resetTotpConfirmLimit(store, { userId });
+
+    expect(await checkTotpConfirmLimit(store, { userId })).toEqual({
+      allowed: true,
+      remaining: 4,
+    });
+  });
+
+  it("logs the degradation and reports no enforcement when valkey fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockClear();
+    const broken: RateLimitStore = {
+      incr: vi.fn(async () => {
+        throw new Error("valkey down");
+      }),
+      decr: vi.fn(async () => {
+        throw new Error("valkey down");
+      }),
+      pttl: vi.fn(async () => {
+        throw new Error("valkey down");
+      }),
+      pexpire: vi.fn(async () => {
+        throw new Error("valkey down");
+      }),
+      del: vi.fn(async () => {
+        throw new Error("valkey down");
+      }),
+    };
+
+    expect(
+      await checkTotpConfirmLimit(broken, {
+        userId: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toBeNull();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    await expect(
+      resetTotpConfirmLimit(broken, {
+        userId: "00000000-0000-4000-8000-000000000001",
       }),
     ).resolves.toBeUndefined();
   });

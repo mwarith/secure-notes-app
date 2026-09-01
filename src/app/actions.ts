@@ -7,6 +7,7 @@ import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import {
   createNoteForUser,
   listNoteVersionsForUser,
+  restoreNoteVersionForUser,
   updateNoteForUser,
   type NoteVersion,
 } from "@/lib/notes";
@@ -81,7 +82,6 @@ export async function updateNoteAction(
   const noteId = formData.get("noteId");
   const title = formData.get("title");
   const content = formData.get("content");
-  const checkpoint = formData.get("checkpoint");
   const noteIdText = typeof noteId === "string" ? noteId : null;
 
   let session: Awaited<ReturnType<typeof getSession>>;
@@ -97,15 +97,10 @@ export async function updateNoteAction(
 
   let updatedNote: Awaited<ReturnType<typeof updateNoteForUser>>;
   try {
-    updatedNote = await updateNoteForUser(
-      session.userId,
-      noteIdText ?? "",
-      {
-        title: typeof title === "string" ? title : undefined,
-        content: typeof content === "string" ? content : undefined,
-      },
-      { checkpoint: checkpoint === "true" },
-    );
+    updatedNote = await updateNoteForUser(session.userId, noteIdText ?? "", {
+      title: typeof title === "string" ? title : undefined,
+      content: typeof content === "string" ? content : undefined,
+    });
   } catch {
     return transientSaveFailure(session.userId, noteIdText);
   }
@@ -135,4 +130,31 @@ export async function listNoteVersionsAction(
     session.userId,
     typeof noteId === "string" ? noteId : "",
   );
+}
+
+export async function restoreNoteVersionAction(
+  noteId: unknown,
+  versionId: unknown,
+): Promise<{ ok: boolean }> {
+  const cookieStore = await cookies();
+  const session = await getSession(
+    cookieStore.get(SESSION_COOKIE_NAME)?.value,
+  );
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  const noteIdText = typeof noteId === "string" ? noteId : null;
+  const versionIdText = typeof versionId === "string" ? versionId : null;
+
+  const result = await restoreNoteVersionForUser(
+    session.userId,
+    noteIdText ?? "",
+    versionIdText ?? "",
+  );
+
+  revalidatePath("/");
+
+  return { ok: result !== null };
 }

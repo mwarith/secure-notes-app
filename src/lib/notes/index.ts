@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { noteVersions, notes } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 
-const VERSION_CHECKPOINT_MS = 5 * 60 * 1000;
+const VERSION_MIN_INTERVAL_MS = 60 * 1000;
 
 /**
  * Ownership-scoped Note reads (PRD §6, §15; CONTEXT.md "Ownership-scoped
@@ -117,6 +117,81 @@ export async function listNoteVersionsForUser(
 }
 
 /**
+ * Restores an owned note to one of its versions through the same
+ * ownership-scoped boundary as the reads: the version is fetched via a
+ * single join filtered by the version id, the note id, and the user id, so
+ * a foreign note, a foreign version, and a nonexistent version are all
+ * indistinguishable — null. Malformed ids are rejected before the database
+ * sees them.
+ *
+ * The note's title and content are replaced by the version's stored state,
+ * and the restored state is appended as a NEW Note version in the same
+ * transaction: history is append-only (PRD §7) — never rewritten or
+ * deleted — so creation is unconditional and the dedupe/threshold boundary
+ * rules deliberately do not apply here. One user action produces exactly
+ * one audit event, note.version_restored, with the restored version's id
+ * in metadata for lineage; no note.updated event is written. Restore,
+ * version append, and audit commit or roll back together.
+ */
+export async function restoreNoteVersionForUser(
+  userId: string,
+  noteId: string,
+  versionId: string,
+): Promise<Note | null> {
+  if (!isUuid(userId) || !isUuid(noteId) || !isUuid(versionId)) {
+    return null;
+  }
+
+  return db.transaction(async (tx) => {
+    const [version] = await tx
+      .select({
+        title: noteVersions.title,
+        content: noteVersions.content,
+      })
+      .from(noteVersions)
+      .innerJoin(notes, eq(noteVersions.noteId, notes.id))
+      .where(
+        and(
+          eq(noteVersions.id, versionId),
+          eq(notes.id, noteId),
+          eq(notes.userId, userId),
+        ),
+      )
+      .limit(1);
+
+    if (!version) {
+      return null;
+    }
+
+    const [note] = await tx
+      .update(notes)
+      .set({ title: version.title, content: version.content })
+      .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
+      .returning();
+
+    if (!note) {
+      return null;
+    }
+
+    await tx.insert(noteVersions).values({
+      noteId: note.id,
+      title: version.title,
+      content: version.content,
+    });
+
+    await recordAuditEvent(tx, {
+      actorUserId: userId,
+      resourceType: "note",
+      resourceId: noteId,
+      action: "note.version_restored",
+      metadata: { restoredVersionId: versionId },
+    });
+
+    return note;
+  });
+}
+
+/**
  * A note may have only a title, only content, or both; it is rejected as
  * empty_note only when both are blank after trimming. Missing or non-string
  * form fields are treated as empty strings, since server actions receive
@@ -186,19 +261,21 @@ export async function createNoteForUser(
  *
  * When the update succeeds, a Note version snapshot may be captured in the
  * same transaction (PRD §7). A version records a saved state: it stores the
- * post-update title and content. The boundary rule — insert a version when
- * no prior version exists for the note, or when the saved values differ
- * exactly from the most recent version AND either the caller forced a
- * checkpoint (the editor closing) or at least VERSION_CHECKPOINT_MS have
- * passed since that version was created. Identical-value saves never
- * snapshot, and routine snapshots write no audit event (restoration is
- * ENG-23). Update, optional version, and audit commit or roll back together.
+ * post-update title and content. The boundary rule — snapshot when no prior
+ * version exists for the note, or when the saved values differ exactly from
+ * the most recent version AND at least VERSION_MIN_INTERVAL_MS (one minute)
+ * have passed since that version was created. The throttle replaces the
+ * earlier close-intent signal: autosave means closing with unsaved changes
+ * is unobservable (content is saved before close), so versioning is purely
+ * server-side — every content-differing save lands at most once per minute.
+ * Identical-value saves never snapshot, and routine snapshots write no audit
+ * event (restoration is ENG-25). Update, optional version, and audit commit
+ * or roll back together.
  */
 export async function updateNoteForUser(
   userId: string,
   noteId: string,
   changes: { title?: string; content?: string },
-  options?: { checkpoint?: boolean },
 ): Promise<Note | null> {
   if (!isUuid(userId) || !isUuid(noteId)) {
     return null;
@@ -242,8 +319,9 @@ export async function updateNoteForUser(
         lastVersion.title !== note.title ||
         lastVersion.content !== note.content;
       const due =
-        Date.now() - lastVersion.createdAt.getTime() >= VERSION_CHECKPOINT_MS;
-      shouldSnapshot = differs && (options?.checkpoint === true || due);
+        Date.now() - lastVersion.createdAt.getTime() >=
+        VERSION_MIN_INTERVAL_MS;
+      shouldSnapshot = differs && due;
     }
 
     if (shouldSnapshot) {

@@ -58,7 +58,6 @@ export function NoteEditorDialog({
   const [content, setContent] = useState(note.content);
   const [savedRecently, setSavedRecently] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
-  const checkpointInputRef = useRef<HTMLInputElement>(null);
   const fieldsRef = useRef<EditorFields>({
     title: note.title,
     content: note.content,
@@ -124,13 +123,7 @@ export function NoteEditorDialog({
     snapshotRef.current = { ...fieldsRef.current };
     closeIntentRef.current = closeIntent;
     setSavedRecently(false);
-    if (checkpointInputRef.current) {
-      checkpointInputRef.current.value = closeIntent ? "true" : "false";
-    }
     formRef.current?.requestSubmit();
-    if (checkpointInputRef.current) {
-      checkpointInputRef.current.value = "false";
-    }
   }, []);
 
   useEffect(() => {
@@ -264,7 +257,13 @@ export function NoteEditorDialog({
         </DialogHeader>
         {historyOpen && (
           <div className="border-t pt-3">
-            <NoteHistory noteId={note.id} />
+            <NoteHistory
+              noteId={note.id}
+              onRestored={() => {
+                setHistoryOpen(false);
+                setOpen(false);
+              }}
+            />
           </div>
         )}
         <form
@@ -279,7 +278,6 @@ export function NoteEditorDialog({
           }}
         >
           <input type="hidden" name="noteId" value={note.id} />
-          <input ref={checkpointInputRef} type="hidden" name="checkpoint" />
           {state.status === "error" && (
             <p className="text-destructive text-sm">{state.message}</p>
           )}

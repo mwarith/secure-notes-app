@@ -90,6 +90,22 @@ export const noteVersions = pgTable(
   (table) => [index("note_versions_note_id_idx").on(table.noteId)],
 );
 
+export const twoFactorRecoveryCodes = pgTable(
+  "two_factor_recovery_codes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    codeHash: text("code_hash").notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("two_factor_recovery_codes_user_id_idx").on(table.userId)],
+);
+
 export const auditEvents = pgTable(
   "audit_events",
   {

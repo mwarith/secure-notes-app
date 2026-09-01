@@ -89,7 +89,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await valkey.flushdb();
   await db.execute(
-    sql`TRUNCATE users, sessions, notes, note_versions, audit_events`,
+    sql`TRUNCATE users, sessions, notes, note_versions, audit_events, two_factor_recovery_codes`,
   );
   requestHeaders.value = new Headers({ "x-forwarded-for": IP });
   valkeyRateLimitBroken.value = false;

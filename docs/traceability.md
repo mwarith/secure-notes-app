@@ -26,7 +26,7 @@ Maps PRD requirements to the tickets that implement them. Maintained incremental
 | §10–§11 Logging & Metrics | Infra provisioned (ENG-1); JSON logger + counter seams (ENG-15) — pino swap pending (ENG-16) | ENG-1, ENG-15 | Merged; ENG-16 pending |
 | §13 Automated Testing | 245 tests (unit + integration) shipped per-ticket, red-green | per-ticket | Ongoing |
 
-Not yet started: §9 error experience (ENG-33–35), §10–§12 instrumentation details (ENG-16 pino swap, ENG-39 metrics endpoint, ENG-40 Grafana dashboards), §12 stress testing (ENG-41), §13 coverage sweep (ENG-42), §14 Playwright (ENG-43), docs pass (ENG-44), polish (ENG-45/46), demo dry run (ENG-47), recovery-code regeneration + disable follow-ups already covered by ENG-32.
+Not yet started: §9 error experience (ENG-33–35), RTL + UX fixes from product-owner testing (ENG-47–50), §10–§12 instrumentation details (ENG-16 pino swap, ENG-39 metrics endpoint, ENG-40 Grafana dashboards), §12 stress testing (ENG-41), §13 coverage sweep (ENG-42), §14 Playwright (ENG-43), docs pass (ENG-44), polish (ENG-45/46), demo dry run (ENG-51).
 
 ## Known limitations
 

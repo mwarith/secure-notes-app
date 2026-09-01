@@ -4,7 +4,7 @@ import QRCode from "qrcode";
 const TOTP_ISSUER = "Secure Notes";
 const TOTP_ALGORITHM = "SHA1";
 const TOTP_DIGITS = 6;
-const TOTP_PERIOD = 30;
+export const TOTP_PERIOD = 30;
 const TOTP_WINDOW = 1;
 const SECRET_BYTES = 20;
 
@@ -36,6 +36,20 @@ export function totpUri(secret: string, email: string): string {
 }
 
 export function verifyTotpCode(secret: string, code: string): boolean {
+  return verifyTotpCodeDelta(secret, code).valid;
+}
+
+/**
+ * Verification with the raw time-step delta exposed, so calling flows can
+ * implement RFC 6238 §5.2 replay protection: delta is the offset from the
+ * current step (0 = current, -1 = one step old) and is null when the code
+ * does not verify. The caller derives the absolute time-step and must reject
+ * any code whose step is not newer than the last successfully validated one.
+ */
+export function verifyTotpCodeDelta(
+  secret: string,
+  code: string,
+): { valid: boolean; delta: number | null } {
   let totp: TOTP;
   try {
     totp = new TOTP({
@@ -45,9 +59,10 @@ export function verifyTotpCode(secret: string, code: string): boolean {
       period: TOTP_PERIOD,
     });
   } catch {
-    return false;
+    return { valid: false, delta: null };
   }
-  return totp.validate({ token: code, window: TOTP_WINDOW }) !== null;
+  const delta = totp.validate({ token: code, window: TOTP_WINDOW });
+  return { valid: delta !== null, delta };
 }
 
 export async function totpQrDataUrl(uri: string): Promise<string> {

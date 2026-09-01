@@ -1,9 +1,7 @@
 "use server";
 
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
+import { getActiveSession, isRedirectError } from "@/lib/auth/active-session";
 import {
   checkpointNoteVersionForUser,
   createNoteForUser,
@@ -29,14 +27,7 @@ export async function createNoteAction(
   _prevState: CreateNoteFormState,
   formData: FormData,
 ): Promise<CreateNoteFormState> {
-  const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
-
-  if (!session) {
-    redirect("/login");
-  }
+  const session = await getActiveSession();
 
   const result = await createNoteForUser(
     session.userId,
@@ -80,21 +71,21 @@ export async function updateNoteAction(
   _prevState: UpdateNoteFormState,
   formData: FormData,
 ): Promise<UpdateNoteFormState> {
-  const cookieStore = await cookies();
   const noteId = formData.get("noteId");
   const title = formData.get("title");
   const content = formData.get("content");
   const noteIdText = typeof noteId === "string" ? noteId : null;
 
-  let session: Awaited<ReturnType<typeof getSession>>;
+  let session: Awaited<ReturnType<typeof getActiveSession>>;
   try {
-    session = await getSession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
-  } catch {
+    session = await getActiveSession();
+  } catch (error) {
+    // getActiveSession signals auth redirects by throwing; those must keep
+    // propagating, not become transient failures.
+    if (isRedirectError(error)) {
+      throw error;
+    }
     return transientSaveFailure(null, noteIdText);
-  }
-
-  if (!session) {
-    redirect("/login");
   }
 
   let updatedNote: Awaited<ReturnType<typeof updateNoteForUser>>;
@@ -119,14 +110,7 @@ export async function updateNoteAction(
 export async function listNoteVersionsAction(
   noteId: unknown,
 ): Promise<NoteVersion[]> {
-  const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
-
-  if (!session) {
-    redirect("/login");
-  }
+  const session = await getActiveSession();
 
   return listNoteVersionsForUser(
     session.userId,
@@ -138,14 +122,7 @@ export async function restoreNoteVersionAction(
   noteId: unknown,
   versionId: unknown,
 ): Promise<{ ok: boolean }> {
-  const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
-
-  if (!session) {
-    redirect("/login");
-  }
+  const session = await getActiveSession();
 
   const noteIdText = typeof noteId === "string" ? noteId : null;
   const versionIdText = typeof versionId === "string" ? versionId : null;
@@ -167,14 +144,7 @@ export async function restoreNoteVersionAction(
 export async function checkpointNoteVersionAction(
   noteId: unknown,
 ): Promise<{ created: boolean }> {
-  const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
-
-  if (!session) {
-    redirect("/login");
-  }
+  const session = await getActiveSession();
 
   const noteIdText = typeof noteId === "string" ? noteId : null;
 
@@ -189,14 +159,7 @@ export async function checkpointNoteVersionAction(
 export async function deleteNoteAction(
   noteId: unknown,
 ): Promise<{ ok: boolean }> {
-  const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
-
-  if (!session) {
-    redirect("/login");
-  }
+  const session = await getActiveSession();
 
   const noteIdText = typeof noteId === "string" ? noteId : null;
 

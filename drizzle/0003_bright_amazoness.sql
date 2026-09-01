@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "pending_two_factor" boolean DEFAULT false NOT NULL;

@@ -14,7 +14,13 @@ export const DUMMY_PASSWORD_HASH =
   "$argon2id$v=19$m=19456,t=2,p=1$Z9NIRIIIuR+fZzA4hrrZyQ$GSrGd6dOroMRZCyl+2Poc648AddkinPOoXVjyjmZLrc";
 
 export type LoginResult =
-  | { ok: true; userId: string; token: string; expiresAt: Date }
+  | {
+      ok: true;
+      userId: string;
+      token: string;
+      expiresAt: Date;
+      pending2fa: boolean;
+    }
   | { ok: false; reason: "invalid_credentials" };
 
 type CredentialCheck =
@@ -70,7 +76,16 @@ export async function login(input: {
   const check = await verifyCredentials(input);
 
   if (check.ok) {
-    const { token, expiresAt } = await createSession(check.userId);
+    const [user] = await db
+      .select({ totpEnabled: users.totpEnabled })
+      .from(users)
+      .where(eq(users.id, check.userId))
+      .limit(1);
+    const pending2fa = user?.totpEnabled === true;
+
+    const { token, expiresAt } = await createSession(check.userId, {
+      pendingTwoFactor: pending2fa,
+    });
     await recordAuditEvent(db, {
       actorUserId: check.userId,
       resourceType: "user",
@@ -78,7 +93,7 @@ export async function login(input: {
       action: "login.success",
       metadata: { method: "password" },
     });
-    return { ok: true, userId: check.userId, token, expiresAt };
+    return { ok: true, userId: check.userId, token, expiresAt, pending2fa };
   }
 
   await recordAuditEvent(db, {

@@ -1,12 +1,11 @@
 "use server";
 
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users } from "@/db/schema";
-import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
+import { getActiveSession } from "@/lib/auth/active-session";
 import {
   generateTotpSecret,
   totpQrDataUrl,
@@ -44,14 +43,7 @@ const INVALID_CODE_MESSAGE = "That code didn't match. Try again.";
  */
 
 export async function startTotpSetupAction(): Promise<StartTotpSetupResult> {
-  const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
-
-  if (!session) {
-    redirect("/login");
-  }
+  const session = await getActiveSession();
 
   const [user] = await db
     .select({
@@ -89,14 +81,7 @@ export async function confirmTotpSetupAction(
   _prevState: ConfirmTotpState,
   formData: FormData,
 ): Promise<ConfirmTotpState> {
-  const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
-
-  if (!session) {
-    redirect("/login");
-  }
+  const session = await getActiveSession();
 
   const gate = await checkTotpConfirmLimit(valkey, {
     userId: session.userId,

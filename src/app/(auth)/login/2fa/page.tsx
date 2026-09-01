@@ -37,7 +37,8 @@ export default async function TwoFactorChallengePage() {
         <CardHeader>
           <CardTitle>Two-factor authentication</CardTitle>
           <CardDescription>
-            Enter the 6-digit code from your authenticator app.
+            Enter the code from your authenticator app, or use one of your
+            recovery codes.
           </CardDescription>
         </CardHeader>
         <CardContent>

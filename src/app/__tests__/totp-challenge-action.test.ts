@@ -3,7 +3,12 @@ import { eq, sql } from "drizzle-orm";
 import { Redis } from "ioredis";
 import { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { auditEvents, sessions, users } from "@/db/schema";
+import {
+  auditEvents,
+  sessions,
+  twoFactorRecoveryCodes,
+  users,
+} from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
@@ -12,6 +17,11 @@ import { encryptTotpSecret } from "@/lib/auth/totp-crypto";
 import { generateTotpSecret, totpUri } from "@/lib/auth/totp";
 import { TOTP, URI } from "otpauth";
 import { verifyTotpChallengeAction } from "@/app/(auth)/login/2fa/actions";
+import {
+  confirmTotpSetupAction,
+  startTotpSetupAction,
+  type ConfirmTotpState,
+} from "@/app/settings/security/actions";
 import {
   resolveTestDatabaseUrl,
   resolveTestValkeyUrl,
@@ -109,10 +119,52 @@ const prevState: { ok: true } | { ok: false; error: string } = {
   error: "",
 };
 
+const confirmPrevState: ConfirmTotpState = { ok: false, error: "" };
+
 function formData(code: string): FormData {
   const data = new FormData();
   data.set("code", code);
   return data;
+}
+
+function recoveryFormData(code: string): FormData {
+  const data = formData(code);
+  data.set("mode", "recovery");
+  return data;
+}
+
+/**
+ * Walks the real enable journey (active session → start → confirm) so the
+ * codes under test come from the activation batch the confirm action
+ * generated, exactly as a user would hold them.
+ */
+async function seedEnabledUserWithRecoveryCodes(): Promise<{
+  userId: string;
+  recoveryCodes: string[];
+}> {
+  const { hashPassword } = await import("@/lib/auth/password");
+  const [user] = await db
+    .insert(users)
+    .values({ email: EMAIL, passwordHash: await hashPassword(PASSWORD) })
+    .returning({ id: users.id });
+
+  const result = await login({ email: EMAIL, password: PASSWORD });
+  if (!result.ok) throw new Error("expected login to succeed");
+  vi.mocked(cookieStore.get).mockReturnValue({
+    name: "session",
+    value: result.token,
+  } as never);
+
+  const start = await startTotpSetupAction();
+  if (!start.ok) throw new Error("expected setup to start");
+  const confirm = await confirmTotpSetupAction(
+    confirmPrevState,
+    formData(currentTokenFromUri(start.uri)),
+  );
+  if (!confirm.ok) throw new Error("expected confirmation to succeed");
+
+  await db.delete(auditEvents);
+  return { userId: user.id, recoveryCodes: confirm.recoveryCodes };
 }
 
 afterAll(async () => {
@@ -127,7 +179,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await valkey.flushdb();
   await db.execute(
-    sql`TRUNCATE users, sessions, notes, note_versions, audit_events`,
+    sql`TRUNCATE users, sessions, notes, note_versions, audit_events, two_factor_recovery_codes`,
   );
   vi.mocked(cookieStore.get).mockReset();
   vi.mocked(redirect).mockReset();
@@ -293,6 +345,157 @@ describe("verifyTotpChallengeAction (integration)", () => {
     expect(await db.select().from(auditEvents)).toHaveLength(5);
 
     const [row] = await db.select().from(sessions);
+    expect(row.pendingTwoFactor).toBe(true);
+  });
+
+  it("signs in with an unused recovery code when mode is recovery", async () => {
+    const { userId, recoveryCodes } = await seedEnabledUserWithRecoveryCodes();
+    const token = await seedPendingSession();
+    const tokenHash = hashSessionToken(token);
+    const code = recoveryCodes[0];
+    if (code === undefined) throw new Error("expected a recovery code");
+
+    vi.mocked(redirect).mockImplementation((path: string) => {
+      throw new Error(`NEXT_REDIRECT:${path}`);
+    });
+
+    await expect(
+      verifyTotpChallengeAction(prevState, recoveryFormData(code)),
+    ).rejects.toThrow("NEXT_REDIRECT:/");
+    expect(redirect).toHaveBeenCalledWith("/");
+
+    const stored = await db
+      .select()
+      .from(twoFactorRecoveryCodes)
+      .where(eq(twoFactorRecoveryCodes.userId, userId));
+    expect(stored).toHaveLength(8);
+    const used = stored.filter((row) => row.usedAt !== null);
+    expect(used).toHaveLength(1);
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.tokenHash, tokenHash));
+    expect(row.pendingTwoFactor).toBe(false);
+
+    const storedSession = await appValkey.get(`session:${tokenHash}`);
+    if (storedSession === null) throw new Error("expected the session payload");
+    const payload = JSON.parse(storedSession);
+    expect(payload.userId).toBe(userId);
+    expect(payload.pendingTwoFactor).toBe(false);
+
+    const sessionAfter = await getSessionFromStores(token);
+    expect(sessionAfter?.pendingTwoFactor).toBe(false);
+
+    const events = await db.select().from(auditEvents);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.action).toBe("2fa.recovery_used");
+    expect(events[0]?.actorUserId).toBe(userId);
+    expect(events[0]?.resourceType).toBe("user");
+    expect(events[0]?.resourceId).toBe(userId);
+    expect(events[0]?.metadata).toEqual({});
+  });
+
+  it("rejects a replayed recovery code like a wrong code", async () => {
+    const { recoveryCodes } = await seedEnabledUserWithRecoveryCodes();
+    const code = recoveryCodes[0];
+    if (code === undefined) throw new Error("expected a recovery code");
+    await seedPendingSession();
+
+    vi.mocked(redirect).mockImplementation((path: string) => {
+      throw new Error(`NEXT_REDIRECT:${path}`);
+    });
+    await expect(
+      verifyTotpChallengeAction(prevState, recoveryFormData(code)),
+    ).rejects.toThrow("NEXT_REDIRECT:/");
+
+    const secondToken = await seedPendingSession();
+    vi.mocked(cookieStore.get).mockReturnValue({
+      name: "session",
+      value: secondToken,
+    } as never);
+
+    const result = await verifyTotpChallengeAction(
+      prevState,
+      recoveryFormData(code),
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: "That code didn't match. Try again.",
+    });
+
+    const [event] = await db.select().from(auditEvents);
+    expect(event?.action).toBe("login.failed");
+    expect(event?.metadata).toEqual({
+      method: "password",
+      outcome: "invalid_recovery_code",
+    });
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.tokenHash, hashSessionToken(secondToken)));
+    expect(row.pendingTwoFactor).toBe(true);
+  });
+
+  it("rejects an unknown recovery code like a wrong code", async () => {
+    const { userId } = await seedEnabledUserWithRecoveryCodes();
+    const token = await seedPendingSession();
+
+    const result = await verifyTotpChallengeAction(
+      prevState,
+      recoveryFormData("zzzzz-zzzzz"),
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: "That code didn't match. Try again.",
+    });
+
+    const [event] = await db.select().from(auditEvents);
+    expect(event?.action).toBe("login.failed");
+    expect(event?.actorUserId).toBe(userId);
+    expect(event?.metadata).toEqual({
+      method: "password",
+      outcome: "invalid_recovery_code",
+    });
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.tokenHash, hashSessionToken(token)));
+    expect(row.pendingTwoFactor).toBe(true);
+  });
+
+  it("blocks the 6th recovery attempt before verification once the budget is spent", async () => {
+    await seedEnabledUserWithRecoveryCodes();
+    const token = await seedPendingSession();
+
+    for (let i = 0; i < 5; i += 1) {
+      await verifyTotpChallengeAction(
+        prevState,
+        recoveryFormData(`aaaaa-aaaa${i}`),
+      );
+    }
+    const eventsAfterFive = await db.select().from(auditEvents);
+    expect(eventsAfterFive).toHaveLength(5);
+
+    const blocked = await verifyTotpChallengeAction(
+      prevState,
+      recoveryFormData("aaaaa-aaaa5"),
+    );
+
+    expect(blocked).toEqual({
+      ok: false,
+      error: "Too many attempts. Try again later.",
+    });
+    expect(await db.select().from(auditEvents)).toHaveLength(5);
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.tokenHash, hashSessionToken(token)));
     expect(row.pendingTwoFactor).toBe(true);
   });
 });

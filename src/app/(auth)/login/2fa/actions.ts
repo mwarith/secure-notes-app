@@ -3,11 +3,12 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import { users } from "@/db/schema";
+import { twoFactorRecoveryCodes, users } from "@/db/schema";
 import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { activateSession } from "@/lib/auth/session";
+import { hashRecoveryCode } from "@/lib/auth/recovery-codes";
 import { TOTP_PERIOD, verifyTotpCodeDelta } from "@/lib/auth/totp";
 import { decryptTotpSecret } from "@/lib/auth/totp-crypto";
 import { checkTotpConfirmLimit, resetTotpConfirmLimit } from "@/lib/rate-limit";
@@ -37,14 +38,24 @@ function totpReplayKey(userId: string): string {
 /**
  * The second step of a 2FA login (PRD §8). Only a session that is still
  * pending two-factor verification may confirm; everything else is bounced.
- * Attempts consume the userId-keyed TOTP limiter (5 per 15 minutes, fail
- * closed) rather than the IP-keyed login limiter — the session's user id is
- * unspoofable, so a directly exposed deployment cannot rotate fresh attempt
- * budgets by forging X-Forwarded-For. A wrong or replayed code is audited as
- * login.failed with outcome "invalid_totp_code" — no secrets or codes ever
- * reach the audit record. On success the limiter is reset, the pending flag
- * is cleared in both session stores (activateSession), a 2fa.challenge_passed
- * audit event is recorded, and the user is sent to the workspace.
+ * Two challenge modes share one flow (ENG-31): "totp" (default) verifies a
+ * 6-digit authenticator code, "recovery" consumes one of the one-time
+ * codes issued at activation — the input is normalized (trim, lowercase)
+ * and hashed, then a single conditional UPDATE
+ * (…WHERE user_id = … AND code_hash = … AND used_at IS NULL RETURNING id)
+ * atomically marks the code used, so two concurrent logins can never spend
+ * the same code. Both modes consume the userId-keyed TOTP limiter (5 per
+ * 15 minutes, fail closed) rather than the IP-keyed login limiter — the
+ * session's user id is unspoofable, so a directly exposed deployment
+ * cannot rotate fresh attempt budgets by forging X-Forwarded-For, and
+ * recovery codes are exactly as brute-forceable as TOTP codes, so the
+ * same budget applies. A wrong, replayed, or already-used code is audited
+ * as login.failed with outcome "invalid_totp_code" or
+ * "invalid_recovery_code" — no secrets or codes ever reach the audit
+ * record, and the neutral error is identical in both modes. On success
+ * the limiter is reset, the pending flag is cleared in both session
+ * stores (activateSession), a mode-specific audit event is recorded, and
+ * the user is sent to the workspace.
  */
 
 export async function verifyTotpChallengeAction(
@@ -89,6 +100,52 @@ export async function verifyTotpChallengeAction(
     return { ok: false, error: TOO_MANY_ATTEMPTS_MESSAGE };
   }
 
+  const code = formData.get("code");
+  const codeText = typeof code === "string" ? code : "";
+  const mode = formData.get("mode") === "recovery" ? "recovery" : "totp";
+
+  if (mode === "recovery") {
+    const consumed = await db
+      .update(twoFactorRecoveryCodes)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(twoFactorRecoveryCodes.userId, session.userId),
+          eq(
+            twoFactorRecoveryCodes.codeHash,
+            hashRecoveryCode(codeText),
+          ),
+          isNull(twoFactorRecoveryCodes.usedAt),
+        ),
+      )
+      .returning({ id: twoFactorRecoveryCodes.id });
+
+    if (consumed.length === 0) {
+      await recordAuditEvent(db, {
+        actorUserId: session.userId,
+        resourceType: "user",
+        resourceId: session.userId,
+        action: "login.failed",
+        metadata: { method: "password", outcome: "invalid_recovery_code" },
+      });
+      return { ok: false, error: INVALID_CODE_MESSAGE };
+    }
+
+    await resetTotpConfirmLimit(valkey, { userId: session.userId });
+
+    await activateSession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
+
+    await recordAuditEvent(db, {
+      actorUserId: session.userId,
+      resourceType: "user",
+      resourceId: session.userId,
+      action: "2fa.recovery_used",
+      metadata: {},
+    });
+
+    redirect("/");
+  }
+
   if (!user.totpSecretEncrypted) {
     return { ok: false, error: INVALID_CODE_MESSAGE };
   }
@@ -100,9 +157,6 @@ export async function verifyTotpChallengeAction(
     log("error", "2fa.challenge_decrypt_failed", { userId: session.userId });
     return { ok: false, error: INVALID_CODE_MESSAGE };
   }
-
-  const code = formData.get("code");
-  const codeText = typeof code === "string" ? code : "";
 
   const { valid, delta } = verifyTotpCodeDelta(secret, codeText);
   const timestep =

@@ -2,6 +2,7 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users } from "@/db/schema";
@@ -154,6 +155,8 @@ export async function confirmTotpSetupAction(
     action: "2fa.enabled",
     metadata: {},
   });
+
+  revalidatePath("/settings/security");
 
   return { ok: true };
 }

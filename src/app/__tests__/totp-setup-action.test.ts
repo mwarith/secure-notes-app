@@ -35,6 +35,10 @@ vi.mock("next/navigation", () => ({
   redirect: vi.fn(),
 }));
 
+vi.mock("next/cache", () => ({
+  revalidatePath: vi.fn(),
+}));
+
 import { redirect } from "next/navigation";
 
 const pool = new Pool({ connectionString: resolveTestDatabaseUrl() });

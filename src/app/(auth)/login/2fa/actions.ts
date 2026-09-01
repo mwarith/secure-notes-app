@@ -2,12 +2,13 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { activateSession } from "@/lib/auth/session";
-import { verifyTotpCode } from "@/lib/auth/totp";
+import { TOTP_PERIOD, verifyTotpCodeDelta } from "@/lib/auth/totp";
 import { decryptTotpSecret } from "@/lib/auth/totp-crypto";
 import { checkLoginRateLimit, resetLoginRateLimit } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
@@ -19,6 +20,20 @@ export type ChallengeState = { ok: true } | { ok: false; error: string };
 
 const TOO_MANY_ATTEMPTS_MESSAGE = "Too many attempts. Try again later.";
 const INVALID_CODE_MESSAGE = "That code didn't match. Try again.";
+
+/**
+ * RFC 6238 §5.2 replay protection: the absolute time-step of the last
+ * successfully validated code is stored per user (sha256 of the id, matching
+ * the rate-limiter key convention) with a 90-second TTL — three 30-second
+ * windows, the full life of any code the ±1 window could still accept. A
+ * verification whose time-step is not strictly newer than the stored one is
+ * rejected as a replay, so a code can never authenticate twice.
+ */
+const TOTP_REPLAY_TTL_SECONDS = 90;
+
+function totpReplayKey(userId: string): string {
+  return `totp-replay:v1:${createHash("sha256").update(userId).digest("hex")}`;
+}
 
 /**
  * The second step of a 2FA login (PRD §8). Only a session that is still
@@ -88,7 +103,18 @@ export async function verifyTotpChallengeAction(
   const code = formData.get("code");
   const codeText = typeof code === "string" ? code : "";
 
-  if (!verifyTotpCode(secret, codeText)) {
+  const { valid, delta } = verifyTotpCodeDelta(secret, codeText);
+  const timestep =
+    valid && delta !== null
+      ? Math.floor(Date.now() / 1000 / TOTP_PERIOD) + delta
+      : null;
+
+  const replayKey = totpReplayKey(session.userId);
+  const lastUsedStep =
+    timestep !== null ? Number((await valkey.get(replayKey)) ?? -1) : null;
+  if (timestep !== null && lastUsedStep !== null && timestep <= lastUsedStep) {
+    // RFC 6238 §5.2 replay: this exact code (or an older one) already
+    // authenticated — reject it exactly like a wrong code.
     await recordAuditEvent(db, {
       actorUserId: session.userId,
       resourceType: "user",
@@ -98,6 +124,19 @@ export async function verifyTotpChallengeAction(
     });
     return { ok: false, error: INVALID_CODE_MESSAGE };
   }
+
+  if (!valid) {
+    await recordAuditEvent(db, {
+      actorUserId: session.userId,
+      resourceType: "user",
+      resourceId: session.userId,
+      action: "login.failed",
+      metadata: { method: "password", outcome: "invalid_totp_code" },
+    });
+    return { ok: false, error: INVALID_CODE_MESSAGE };
+  }
+
+  await valkey.set(replayKey, String(timestep), "EX", TOTP_REPLAY_TTL_SECONDS);
 
   await resetLoginRateLimit(valkey, { ip, email: user.email });
 

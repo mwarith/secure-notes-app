@@ -229,6 +229,44 @@ describe("verifyTotpChallengeAction (integration)", () => {
     expect(events).toEqual([]);
   });
 
+  it("rejects a replayed code after a successful verification (RFC 6238 §5.2)", async () => {
+    const { secret } = await seedUser();
+    await seedPendingSession();
+    const code = currentTokenFromUri(totpUri(secret, EMAIL));
+
+    vi.mocked(redirect).mockImplementation((path: string) => {
+      throw new Error(`NEXT_REDIRECT:${path}`);
+    });
+
+    // First login with the code succeeds and activates its session.
+    await expect(
+      verifyTotpChallengeAction(prevState, formData(code)),
+    ).rejects.toThrow("NEXT_REDIRECT:/");
+
+    // A second pending session (sign-in from another browser) reusing the
+    // SAME code is rejected as a replay — audited like a wrong code, nothing
+    // activated.
+    const secondToken = await seedPendingSession();
+    vi.mocked(cookieStore.get).mockReturnValue({
+      name: "session",
+      value: secondToken,
+    } as never);
+
+    const result = await verifyTotpChallengeAction(prevState, formData(code));
+
+    expect(result).toEqual({
+      ok: false,
+      error: "That code didn't match. Try again.",
+    });
+
+    const [event] = await db.select().from(auditEvents);
+    expect(event?.action).toBe("login.failed");
+    expect(event?.metadata).toEqual({
+      method: "password",
+      outcome: "invalid_totp_code",
+    });
+  });
+
   it("blocks with a neutral error once the login limiter budget is spent", async () => {
     const { secret } = await seedUser();
     await seedPendingSession();

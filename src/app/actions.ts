@@ -7,6 +7,7 @@ import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import {
   checkpointNoteVersionForUser,
   createNoteForUser,
+  deleteNoteForUser,
   listNoteVersionsForUser,
   restoreNoteVersionForUser,
   updateNoteForUser,
@@ -183,4 +184,25 @@ export async function checkpointNoteVersionAction(
   );
 
   return { created: result?.created ?? false };
+}
+
+export async function deleteNoteAction(
+  noteId: unknown,
+): Promise<{ ok: boolean }> {
+  const cookieStore = await cookies();
+  const session = await getSession(
+    cookieStore.get(SESSION_COOKIE_NAME)?.value,
+  );
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  const noteIdText = typeof noteId === "string" ? noteId : null;
+
+  const deleted = await deleteNoteForUser(session.userId, noteIdText ?? "");
+
+  revalidatePath("/");
+
+  return { ok: deleted };
 }

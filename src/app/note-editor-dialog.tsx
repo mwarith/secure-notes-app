@@ -12,13 +12,24 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { History } from "lucide-react";
+import { History, Trash2 } from "lucide-react";
 import { resolveEditorSave, type EditorFields } from "./editor-save-policy";
 import {
   resolveSaveIndicator,
@@ -26,6 +37,7 @@ import {
 } from "./save-indicator";
 import {
   checkpointNoteVersionAction,
+  deleteNoteAction,
   updateNoteAction,
   type UpdateNoteFormState,
 } from "./actions";
@@ -60,6 +72,8 @@ export function NoteEditorDialog({
   );
   const [open, setOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
   const [savedRecently, setSavedRecently] = useState(false);
@@ -239,6 +253,18 @@ export function NoteEditorDialog({
     setOpen(false);
   }
 
+  async function handleDelete() {
+    setIsDeleting(true);
+    try {
+      await deleteNoteAction(note.id);
+    } finally {
+      setIsDeleting(false);
+      setDeleteOpen(false);
+      setHistoryOpen(false);
+      setOpen(false);
+    }
+  }
+
   const indicator = resolveSaveIndicator({
     pending,
     status: state.status,
@@ -326,6 +352,49 @@ export function NoteEditorDialog({
             />
           </div>
         </form>
+        <div className="flex justify-end border-t pt-3">
+          <AlertDialog
+            open={deleteOpen}
+            onOpenChange={(next) => {
+              if (!isDeleting) setDeleteOpen(next);
+            }}
+          >
+            <AlertDialogTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Delete note"
+                className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Trash2 className="size-4" aria-hidden />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete this note?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This can&apos;t be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel variant="ghost" disabled={isDeleting}>
+                  Cancel
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  disabled={isDeleting}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void handleDelete().catch(() => undefined);
+                  }}
+                >
+                  {isDeleting ? "Deleting…" : "Delete"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </DialogContent>
     </Dialog>
   );

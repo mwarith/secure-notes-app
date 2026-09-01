@@ -1,9 +1,10 @@
 import { drizzle } from "drizzle-orm/node-postgres";
+import { createHash } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { Redis } from "ioredis";
 import { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { auditEvents, users } from "@/db/schema";
+import { auditEvents, twoFactorRecoveryCodes, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
@@ -13,6 +14,7 @@ import { verifyTotpCode } from "@/lib/auth/totp";
 import {
   confirmTotpSetupAction,
   startTotpSetupAction,
+  type ConfirmTotpState,
 } from "@/app/settings/security/actions";
 import {
   resolveTestDatabaseUrl,
@@ -108,7 +110,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await valkey.flushdb();
   await db.execute(
-    sql`TRUNCATE users, sessions, notes, note_versions, audit_events`,
+    sql`TRUNCATE users, sessions, notes, note_versions, audit_events, two_factor_recovery_codes`,
   );
   vi.mocked(cookieStore.get).mockReset();
   vi.mocked(redirect).mockReset();
@@ -163,7 +165,7 @@ describe("startTotpSetupAction (integration)", () => {
 });
 
 describe("confirmTotpSetupAction (integration)", () => {
-  const prevState = { ok: false, error: "" };
+  const prevState: ConfirmTotpState = { ok: false, error: "" };
 
   function formData(code: string): FormData {
     const data = new FormData();
@@ -216,10 +218,32 @@ describe("confirmTotpSetupAction (integration)", () => {
 
     const result = await confirmTotpSetupAction(prevState, formData(token));
 
-    expect(result).toEqual({ ok: true });
+    if (!result.ok) throw new Error("expected confirmation to succeed");
+    expect(result.recoveryCodes).toHaveLength(8);
+    for (const code of result.recoveryCodes) {
+      expect(code).toMatch(/^[a-z2-7]{5}-[a-z2-7]{5}$/);
+    }
 
     const [row] = await db.select().from(users).where(eq(users.id, userId));
     expect(row?.totpEnabled).toBe(true);
+
+    const stored = await db
+      .select()
+      .from(twoFactorRecoveryCodes)
+      .where(eq(twoFactorRecoveryCodes.userId, userId));
+    expect(stored).toHaveLength(8);
+    const hashes = new Set(stored.map((code) => code.codeHash));
+    for (const code of stored) {
+      expect(code.usedAt).toBeNull();
+    }
+    // Only hashes are stored: no returned plaintext appears in the table,
+    // and each row is the sha256 of exactly one returned code.
+    for (const plaintext of result.recoveryCodes) {
+      expect(hashes.has(plaintext)).toBe(false);
+      expect(
+        hashes.has(createHash("sha256").update(plaintext).digest("hex")),
+      ).toBe(true);
+    }
 
     const events = await db.select().from(auditEvents);
     expect(events).toHaveLength(1);
@@ -235,9 +259,9 @@ describe("confirmTotpSetupAction (integration)", () => {
     const start = await startTotpSetupAction();
     if (!start.ok) throw new Error("expected setup to start");
     const token = currentTokenFromUri(start.uri);
-    expect(await confirmTotpSetupAction(prevState, formData(token))).toEqual({
-      ok: true,
-    });
+    const first = await confirmTotpSetupAction(prevState, formData(token));
+    if (!first.ok) throw new Error("expected confirmation to succeed");
+    expect(first.recoveryCodes).toHaveLength(8);
 
     const again = await confirmTotpSetupAction(prevState, formData(token));
 

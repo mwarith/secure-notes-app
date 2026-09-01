@@ -1,11 +1,14 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { users } from "@/db/schema";
+import { twoFactorRecoveryCodes, users } from "@/db/schema";
 import { getActiveSession } from "@/lib/auth/active-session";
+import {
+  generateRecoveryCodes,
+  hashRecoveryCode,
+} from "@/lib/auth/recovery-codes";
 import {
   generateTotpSecret,
   totpQrDataUrl,
@@ -22,7 +25,9 @@ export type StartTotpSetupResult =
   | { ok: true; uri: string; qrDataUrl: string }
   | { ok: false; error: string };
 
-export type ConfirmTotpState = { ok: true } | { ok: false; error: string };
+export type ConfirmTotpState =
+  | { ok: true; recoveryCodes: string[] }
+  | { ok: false; error: string };
 
 const ALREADY_ENABLED_MESSAGE =
   "Two-factor authentication is already enabled.";
@@ -39,7 +44,11 @@ const INVALID_CODE_MESSAGE = "That code didn't match. Try again.";
  * window limiter BEFORE verification, so online guessing of the 6-digit
  * code is bounded to 5 tries per 15 minutes per user; success resets the
  * window and writes exactly one 2fa.enabled audit event with no secrets in
- * metadata.
+ * metadata. Confirmation also issues the batch of 8 one-time recovery
+ * codes (PRD §5 "Recovery", ENG-31): only sha256 hashes are stored; the
+ * plaintexts ride back in this single response, are shown once by the
+ * client, and are never logged. Recovery login consumes them via the
+ * ENG-31 challenge flow (disable is ENG-32).
  */
 
 export async function startTotpSetupAction(): Promise<StartTotpSetupResult> {
@@ -131,6 +140,17 @@ export async function confirmTotpSetupAction(
     .set({ totpEnabled: true })
     .where(eq(users.id, session.userId));
 
+  // One-time recovery codes (PRD §5 "Recovery"): only their hashes are
+  // persisted; the plaintext batch travels to the client exactly once in
+  // this response and is never logged (ENG-31).
+  const recoveryCodes = generateRecoveryCodes();
+  await db.insert(twoFactorRecoveryCodes).values(
+    recoveryCodes.map((code) => ({
+      userId: session.userId,
+      codeHash: hashRecoveryCode(code),
+    })),
+  );
+
   await resetTotpConfirmLimit(valkey, { userId: session.userId });
 
   await recordAuditEvent(db, {
@@ -141,7 +161,10 @@ export async function confirmTotpSetupAction(
     metadata: {},
   });
 
-  revalidatePath("/settings/security");
+  // No revalidatePath here: the route revalidation would unmount this
+  // response's client component before the user sees the one-time recovery
+  // codes. The setup UI calls router.refresh() after the codes are
+  // acknowledged instead.
 
-  return { ok: true };
+  return { ok: true, recoveryCodes };
 }

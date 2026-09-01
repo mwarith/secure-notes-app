@@ -335,7 +335,7 @@ describe("totp confirm limiter", () => {
     });
   });
 
-  it("logs the degradation and reports no enforcement when valkey fails", async () => {
+  it("fails closed with a logged degradation when valkey fails", async () => {
     const consoleError = vi.spyOn(console, "error").mockClear();
     const broken: RateLimitStore = {
       incr: vi.fn(async () => {
@@ -359,7 +359,10 @@ describe("totp confirm limiter", () => {
       await checkTotpConfirmLimit(broken, {
         userId: "00000000-0000-4000-8000-000000000001",
       }),
-    ).toBeNull();
+    ).toEqual({
+      allowed: false,
+      retryAfterSeconds: TOTP_CONFIRM_RATE_LIMIT.windowSeconds,
+    });
     expect(consoleError).toHaveBeenCalledTimes(1);
     await expect(
       resetTotpConfirmLimit(broken, {

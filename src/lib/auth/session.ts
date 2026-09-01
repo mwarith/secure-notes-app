@@ -109,6 +109,10 @@ async function getSessionFromDurableRow(
     userId: row.userId,
     createdAt: row.createdAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
+    // The durable fallback must carry the pending flag: dropping it here
+    // would promote a mid-login session to fully active during a Valkey
+    // outage, silently bypassing the 2FA challenge.
+    pendingTwoFactor: row.pendingTwoFactor,
   };
 }
 
@@ -131,15 +135,17 @@ export async function destroySession(
 
 /**
  * Clears a session's pending-two-factor flag in BOTH stores once the login
- * challenge succeeds, promoting it to a fully active session. The durable
- * sessions row is the source of truth; a non-pending token is a safe no-op,
- * so replaying the activation can never revive anything.
+ * challenge succeeds, promoting it to a fully active session. The Valkey
+ * payload is re-written (not patched) because ioredis has no partial JSON
+ * update — the original remaining TTL is preserved and the rewritten payload
+ * only ever carries the fields createSession wrote. An expired or
+ * expiring-imminently session is cleaned up rather than activated.
  *
- * The Valkey payload is re-written (not patched) because ioredis has no
- * partial JSON update — the original remaining TTL is preserved and the
- * rewritten payload only ever carries the fields createSession wrote. An
- * expired or expiring-imminently session is cleaned up rather than
- * activated.
+ * Activation is idempotent and self-repairing: the durable row is read
+ * regardless of its pending state, and the Valkey payload is written BEFORE
+ * the row is flipped — a transient Valkey failure therefore leaves the row
+ * pending (the challenge stays enforceable) and a retry converges, instead
+ * of wedging the user with an active row behind a stale pending payload.
  */
 export async function activateSession(
   token: string | undefined | null,
@@ -149,6 +155,11 @@ export async function activateSession(
   }
   const tokenHash = hashSessionToken(token);
 
+  // The row is read regardless of its pending state: a previous activation
+  // may have flipped the durable row while a transient Valkey error
+  // prevented the payload rewrite — re-running the activation must repair
+  // that wedge, so the early return would strand the user in the challenge
+  // loop until the payload TTLs out.
   const [row] = await db
     .select({
       userId: sessions.userId,
@@ -156,22 +167,12 @@ export async function activateSession(
       expiresAt: sessions.expiresAt,
     })
     .from(sessions)
-    .where(
-      and(
-        eq(sessions.tokenHash, tokenHash),
-        eq(sessions.pendingTwoFactor, true),
-      ),
-    )
+    .where(eq(sessions.tokenHash, tokenHash))
     .limit(1);
 
   if (!row) {
     return;
   }
-
-  await db
-    .update(sessions)
-    .set({ pendingTwoFactor: false })
-    .where(eq(sessions.tokenHash, tokenHash));
 
   const remainingTtlSeconds = Math.ceil(
     (row.expiresAt.getTime() - Date.now()) / 1000,
@@ -187,6 +188,10 @@ export async function activateSession(
     return;
   }
 
+  // The Valkey payload is written BEFORE the durable row is flipped: if this
+  // write fails, the row is still pending and a retry re-runs the whole
+  // activation. Flipping the row first would wedge the user (durable row
+  // active, Valkey payload still pending) until the payload TTLs out.
   const payload: SessionData = {
     userId: row.userId,
     createdAt: row.createdAt.toISOString(),
@@ -199,4 +204,9 @@ export async function activateSession(
     "EX",
     remainingTtlSeconds,
   );
+
+  await db
+    .update(sessions)
+    .set({ pendingTwoFactor: false })
+    .where(eq(sessions.tokenHash, tokenHash));
 }

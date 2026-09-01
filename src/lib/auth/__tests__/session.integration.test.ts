@@ -260,5 +260,58 @@ describe("session store (integration)", () => {
     ).toHaveLength(0);
     expect(await valkey.get(valkeyKeyFor(token))).toBeNull();
   });
+
+  it("preserves the pending flag in the durable fallback during a Valkey outage", async () => {
+    const { token } = await createSession(userId, {
+      pendingTwoFactor: true,
+    });
+
+    const getSpy = vi
+      .spyOn(appValkey, "get")
+      .mockRejectedValue(new Error("connection refused"));
+    try {
+      const session = await getSession(token);
+      expect(session).not.toBeNull();
+      // A pending session must NOT be promoted to fully active by the
+      // outage fallback — that would silently bypass the 2FA challenge.
+      expect(session?.pendingTwoFactor).toBe(true);
+    } finally {
+      getSpy.mockRestore();
+    }
+  });
+
+  it("activateSession repairs the wedge when the Valkey payload write fails first", async () => {
+    const { token, expiresAt } = await createSession(userId, {
+      pendingTwoFactor: true,
+    });
+    const tokenHash = hashSessionToken(token);
+
+    const setSpy = vi
+      .spyOn(appValkey, "set")
+      .mockRejectedValueOnce(new Error("connection refused"));
+    try {
+      await expect(activateSession(token)).rejects.toThrow("connection refused");
+      // The durable row must still be pending: the payload write failed
+      // BEFORE the row flip, so the challenge stays enforceable.
+      const [wedgeRow] = await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.tokenHash, tokenHash));
+      expect(wedgeRow.pendingTwoFactor).toBe(true);
+    } finally {
+      setSpy.mockRestore();
+    }
+
+    // Retry after Valkey recovers converges: both stores end up active.
+    await activateSession(token);
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.tokenHash, tokenHash));
+    expect(row.pendingTwoFactor).toBe(false);
+    const session = await getSession(token);
+    expect(session?.pendingTwoFactor).toBe(false);
+    expect(session?.expiresAt).toBe(expiresAt.toISOString());
+  });
 });
 

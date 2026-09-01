@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   jsonb,
   pgTable,
@@ -14,6 +15,8 @@ export const users = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     email: text("email").notNull(),
     passwordHash: text("password_hash").notNull(),
+    totpSecretEncrypted: text("totp_secret_encrypted"),
+    totpEnabled: boolean("totp_enabled").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

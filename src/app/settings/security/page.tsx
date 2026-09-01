@@ -5,6 +5,7 @@ import { ShieldCheck } from "lucide-react";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { getActiveSession } from "@/lib/auth/active-session";
+import { TotpManagement } from "./totp-management";
 import { TotpSetup } from "./totp-setup";
 
 export const metadata: Metadata = {
@@ -61,18 +62,21 @@ export default async function SecuritySettingsPage() {
 
         <section className="border-border/70 mt-6 rounded-xl border p-4 shadow-sm">
           {status === "enabled" ? (
-            <div className="flex items-center gap-3">
-              <ShieldCheck className="size-5" aria-hidden />
-              <div>
-                <p className="font-medium">
-                  Two-factor authentication is enabled
-                </p>
-                <p className="text-muted-foreground text-sm">
-                  You&apos;ll be asked for an authentication code when you
-                  sign in.
-                </p>
+            <>
+              <div className="flex items-center gap-3">
+                <ShieldCheck className="size-5" aria-hidden />
+                <div>
+                  <p className="font-medium">
+                    Two-factor authentication is enabled
+                  </p>
+                  <p className="text-muted-foreground text-sm">
+                    You&apos;ll be asked for an authentication code when you
+                    sign in.
+                  </p>
+                </div>
               </div>
-            </div>
+              <TotpManagement />
+            </>
           ) : (
             <>
               {status === "pending" && (

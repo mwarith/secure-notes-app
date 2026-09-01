@@ -1,10 +1,12 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { revalidatePath } from "next/cache";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { twoFactorRecoveryCodes, users } from "@/db/schema";
 import { getActiveSession } from "@/lib/auth/active-session";
+import { verifyPassword } from "@/lib/auth/password";
 import {
   generateRecoveryCodes,
   hashRecoveryCode,
@@ -14,6 +16,7 @@ import {
   totpQrDataUrl,
   totpUri,
   verifyTotpCode,
+  verifyTotpCodeDelta,
 } from "@/lib/auth/totp";
 import { decryptTotpSecret, encryptTotpSecret } from "@/lib/auth/totp-crypto";
 import { checkTotpConfirmLimit, resetTotpConfirmLimit } from "@/lib/rate-limit";
@@ -29,11 +32,22 @@ export type ConfirmTotpState =
   | { ok: true; recoveryCodes: string[] }
   | { ok: false; error: string };
 
+export type DisableTotpState =
+  | { ok: true }
+  | { ok: false; field: "password" | "code" | "form"; error: string };
+
+export type RegenerateState =
+  | { ok: true; recoveryCodes: string[] }
+  | { ok: false; error: string };
+
 const ALREADY_ENABLED_MESSAGE =
   "Two-factor authentication is already enabled.";
+const NOT_ENABLED_MESSAGE = "Two-factor authentication is not enabled.";
 const TOO_MANY_ATTEMPTS_MESSAGE = "Too many attempts. Try again later.";
 const NO_PENDING_SETUP_MESSAGE = "Start setup first.";
 const INVALID_CODE_MESSAGE = "That code didn't match. Try again.";
+const PASSWORD_MISMATCH_MESSAGE = "That password didn't match.";
+const ENABLE_FIRST_MESSAGE = "Enable two-factor authentication first.";
 
 /**
  * Two-factor setup actions (PRD §8). The plaintext secret exists only in
@@ -48,8 +62,201 @@ const INVALID_CODE_MESSAGE = "That code didn't match. Try again.";
  * codes (PRD §5 "Recovery", ENG-31): only sha256 hashes are stored; the
  * plaintexts ride back in this single response, are shown once by the
  * client, and are never logged. Recovery login consumes them via the
- * ENG-31 challenge flow (disable is ENG-32).
+ * ENG-31 challenge flow.
  */
+
+/**
+ * Disabling and regenerating (ENG-32, PRD §8 "disable or reconfigure
+ * after appropriate identity verification"): both actions demand the
+ * account password first — the user is already signed in, so the password
+ * is the anti-hijack step that keeps an stolen tab from silently tearing
+ * down 2FA — then verify either a current TOTP code or consume one unused
+ * recovery code (same atomic conditional UPDATE as the ENG-31 login
+ * flow). The limiter runs BEFORE verification so a stolen session cannot
+ * brute-force either factor; wrong-password and wrong-code attempts burn
+ * the same budget and are never audited (a failed management attempt
+ * leaks nothing the audit log needs, and the settings UI shows the
+ * matching field error). Success tears down EVERYTHING the enable flow
+ * created — enabled flag, encrypted secret (the encryption key is the
+ * only key, so NULLing the column destroys the secret), every recovery
+ * row — and writes a single 2fa.disabled audit event. Regeneration
+ * replaces the whole batch atomically-ish (delete-then-insert in one
+ * request; no concurrent login can consume a deleted row) and writes
+ * 2fa.recovery_codes_regenerated. Codes and secrets are never logged.
+ */
+
+export async function disableTotpAction(
+  _prevState: DisableTotpState,
+  formData: FormData,
+): Promise<DisableTotpState> {
+  const session = await getActiveSession();
+
+  const [user] = await db
+    .select({
+      passwordHash: users.passwordHash,
+      totpEnabled: users.totpEnabled,
+      totpSecretEncrypted: users.totpSecretEncrypted,
+      email: users.email,
+    })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .limit(1);
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  if (!user.totpEnabled) {
+    return { ok: false, field: "form", error: NOT_ENABLED_MESSAGE };
+  }
+
+  const gate = await checkTotpConfirmLimit(valkey, {
+    userId: session.userId,
+  });
+  if (gate && !gate.allowed) {
+    return { ok: false, field: "form", error: TOO_MANY_ATTEMPTS_MESSAGE };
+  }
+
+  const password = formData.get("password");
+  const passwordText = typeof password === "string" ? password : "";
+  if (!(await verifyPassword(passwordText, user.passwordHash))) {
+    return { ok: false, field: "password", error: PASSWORD_MISMATCH_MESSAGE };
+  }
+
+  const code = formData.get("code");
+  const codeText = typeof code === "string" ? code : "";
+  const mode = formData.get("mode") === "recovery" ? "recovery" : "totp";
+
+  if (mode === "recovery") {
+    const consumed = await db
+      .update(twoFactorRecoveryCodes)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(twoFactorRecoveryCodes.userId, session.userId),
+          eq(twoFactorRecoveryCodes.codeHash, hashRecoveryCode(codeText)),
+          isNull(twoFactorRecoveryCodes.usedAt),
+        ),
+      )
+      .returning({ id: twoFactorRecoveryCodes.id });
+
+    if (consumed.length === 0) {
+      return { ok: false, field: "code", error: INVALID_CODE_MESSAGE };
+    }
+
+    await recordAuditEvent(db, {
+      actorUserId: session.userId,
+      resourceType: "user",
+      resourceId: session.userId,
+      action: "2fa.recovery_used",
+      metadata: {},
+    });
+  } else {
+    if (!user.totpSecretEncrypted) {
+      return { ok: false, field: "code", error: INVALID_CODE_MESSAGE };
+    }
+
+    let secret: string;
+    try {
+      secret = decryptTotpSecret(user.totpSecretEncrypted);
+    } catch {
+      log("error", "2fa.disable_decrypt_failed", { userId: session.userId });
+      return { ok: false, field: "code", error: INVALID_CODE_MESSAGE };
+    }
+
+    if (!verifyTotpCodeDelta(secret, codeText).valid) {
+      return { ok: false, field: "code", error: INVALID_CODE_MESSAGE };
+    }
+  }
+
+  await db
+    .update(users)
+    .set({ totpEnabled: false, totpSecretEncrypted: null })
+    .where(eq(users.id, session.userId));
+
+  await db
+    .delete(twoFactorRecoveryCodes)
+    .where(eq(twoFactorRecoveryCodes.userId, session.userId));
+
+  await recordAuditEvent(db, {
+    actorUserId: session.userId,
+    resourceType: "user",
+    resourceId: session.userId,
+    action: "2fa.disabled",
+    metadata: {},
+  });
+
+  revalidatePath("/settings/security");
+
+  return { ok: true };
+}
+
+export async function regenerateRecoveryCodesAction(
+  _prevState: RegenerateState,
+  formData: FormData,
+): Promise<RegenerateState> {
+  const session = await getActiveSession();
+
+  const [user] = await db
+    .select({
+      passwordHash: users.passwordHash,
+      totpEnabled: users.totpEnabled,
+    })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .limit(1);
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  if (!user.totpEnabled) {
+    return { ok: false, error: ENABLE_FIRST_MESSAGE };
+  }
+
+  const gate = await checkTotpConfirmLimit(valkey, {
+    userId: session.userId,
+  });
+  if (gate && !gate.allowed) {
+    return { ok: false, error: TOO_MANY_ATTEMPTS_MESSAGE };
+  }
+
+  const password = formData.get("password");
+  const passwordText = typeof password === "string" ? password : "";
+  if (!(await verifyPassword(passwordText, user.passwordHash))) {
+    return { ok: false, error: PASSWORD_MISMATCH_MESSAGE };
+  }
+
+  // Old codes become unusable the moment the new batch replaces them: the
+  // delete-then-insert runs in this single action, and the login consume
+  // only matches rows that still exist.
+  await db
+    .delete(twoFactorRecoveryCodes)
+    .where(eq(twoFactorRecoveryCodes.userId, session.userId));
+
+  // One-time recovery codes (PRD §5 "Recovery"): only their hashes are
+  // persisted; the plaintext batch travels to the client exactly once in
+  // this response and is never logged (ENG-31).
+  const recoveryCodes = generateRecoveryCodes();
+  await db.insert(twoFactorRecoveryCodes).values(
+    recoveryCodes.map((code) => ({
+      userId: session.userId,
+      codeHash: hashRecoveryCode(code),
+    })),
+  );
+
+  await recordAuditEvent(db, {
+    actorUserId: session.userId,
+    resourceType: "user",
+    resourceId: session.userId,
+    action: "2fa.recovery_codes_regenerated",
+    metadata: {},
+  });
+
+  revalidatePath("/settings/security");
+
+  return { ok: true, recoveryCodes };
+}
 
 export async function startTotpSetupAction(): Promise<StartTotpSetupResult> {
   const session = await getActiveSession();

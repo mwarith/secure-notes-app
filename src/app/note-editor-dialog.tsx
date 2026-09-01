@@ -195,6 +195,13 @@ export function NoteEditorDialog({
   function handleOpenChange(next: boolean) {
     if (next) {
       lastSavedRef.current = { title: note.title, content: note.content };
+      // Open is an authoritative resync from server truth: server-side
+      // changes (restore, other tabs) must never be silently reverted by a
+      // close-flush of stale local fields.
+      setTitle(note.title);
+      setContent(note.content);
+      fieldsRef.current = { title: note.title, content: note.content };
+      setSavedRecently(false);
       setHistoryOpen(false);
       setOpen(true);
       return;

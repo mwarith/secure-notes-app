@@ -10,8 +10,7 @@ import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { activateSession } from "@/lib/auth/session";
 import { TOTP_PERIOD, verifyTotpCodeDelta } from "@/lib/auth/totp";
 import { decryptTotpSecret } from "@/lib/auth/totp-crypto";
-import { checkLoginRateLimit, resetLoginRateLimit } from "@/lib/rate-limit";
-import { getClientIp } from "@/lib/client-ip";
+import { checkTotpConfirmLimit, resetTotpConfirmLimit } from "@/lib/rate-limit";
 import { valkey } from "@/lib/valkey";
 import { recordAuditEvent } from "@/lib/audit";
 import { log } from "@/lib/logger";
@@ -38,13 +37,14 @@ function totpReplayKey(userId: string): string {
 /**
  * The second step of a 2FA login (PRD §8). Only a session that is still
  * pending two-factor verification may confirm; everything else is bounced.
- * Attempts consume the same ENG-5 login limiter as the password step (IP +
- * email, 5 per 15 minutes), so an attacker holding a valid password gets 6
- * guesses per window against the 6-digit code, and the first wrong code is
- * audited as login.failed with outcome "invalid_totp_code" — no secrets or
- * codes ever reach the audit record. On success the limiter is reset, the
- * pending flag is cleared in both session stores (activateSession), and the
- * user is sent to the workspace.
+ * Attempts consume the userId-keyed TOTP limiter (5 per 15 minutes, fail
+ * closed) rather than the IP-keyed login limiter — the session's user id is
+ * unspoofable, so a directly exposed deployment cannot rotate fresh attempt
+ * budgets by forging X-Forwarded-For. A wrong or replayed code is audited as
+ * login.failed with outcome "invalid_totp_code" — no secrets or codes ever
+ * reach the audit record. On success the limiter is reset, the pending flag
+ * is cleared in both session stores (activateSession), a 2fa.challenge_passed
+ * audit event is recorded, and the user is sent to the workspace.
  */
 
 export async function verifyTotpChallengeAction(
@@ -82,8 +82,9 @@ export async function verifyTotpChallengeAction(
     redirect("/");
   }
 
-  const ip = await getClientIp();
-  const gate = await checkLoginRateLimit(valkey, { ip, email: user.email });
+  const gate = await checkTotpConfirmLimit(valkey, {
+    userId: session.userId,
+  });
   if (gate && !gate.allowed) {
     return { ok: false, error: TOO_MANY_ATTEMPTS_MESSAGE };
   }
@@ -138,9 +139,17 @@ export async function verifyTotpChallengeAction(
 
   await valkey.set(replayKey, String(timestep), "EX", TOTP_REPLAY_TTL_SECONDS);
 
-  await resetLoginRateLimit(valkey, { ip, email: user.email });
+  await resetTotpConfirmLimit(valkey, { userId: session.userId });
 
   await activateSession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
+
+  await recordAuditEvent(db, {
+    actorUserId: session.userId,
+    resourceType: "user",
+    resourceId: session.userId,
+    action: "2fa.challenge_passed",
+    metadata: {},
+  });
 
   redirect("/");
 }

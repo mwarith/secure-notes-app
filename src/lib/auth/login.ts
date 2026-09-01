@@ -91,7 +91,11 @@ export async function login(input: {
       resourceType: "user",
       resourceId: check.userId,
       action: "login.success",
-      metadata: { method: "password" },
+      // twoFactorPending distinguishes "password accepted, challenge
+      // outstanding" from a fully authenticated login (PRD §8: the audit
+      // must answer what happened — a password-only success on a 2FA
+      // account is not a completed sign-in).
+      metadata: { method: "password", twoFactorPending: pending2fa },
     });
     return { ok: true, userId: check.userId, token, expiresAt, pending2fa };
   }
@@ -121,6 +125,6 @@ export async function logout(token: string | undefined | null): Promise<void> {
     resourceType: "user",
     resourceId: session.userId,
     action: "logout.success",
-    metadata: { method: "password" },
+    metadata: {},
   });
 }

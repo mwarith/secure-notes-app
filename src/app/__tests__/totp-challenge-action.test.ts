@@ -226,7 +226,10 @@ describe("verifyTotpChallengeAction (integration)", () => {
     expect(sessionAfter?.pendingTwoFactor).toBe(false);
 
     const events = await db.select().from(auditEvents);
-    expect(events).toEqual([]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.action).toBe("2fa.challenge_passed");
+    expect(events[0]?.actorUserId).toBe(userId);
+    expect(events[0]?.metadata).toEqual({});
   });
 
   it("rejects a replayed code after a successful verification (RFC 6238 §5.2)", async () => {

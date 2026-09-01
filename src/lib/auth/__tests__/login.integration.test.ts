@@ -66,7 +66,10 @@ describe("login (integration)", () => {
     expect(event.actorUserId).toBe(userId);
     expect(event.resourceType).toBe("user");
     expect(event.resourceId).toBe(userId);
-    expect(event.metadata).toEqual({ method: "password" });
+    expect(event.metadata).toEqual({
+      method: "password",
+      twoFactorPending: false,
+    });
   });
 
   it("returns generic invalid_credentials and fully-NULL audit columns for a nonexistent email", async () => {

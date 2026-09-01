@@ -148,7 +148,14 @@ export async function resetRateLimit(
 function logFailOpen(flow: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   console.error(
-    `[rate-limit] valkey unavailable while limiting ${flow} — failing open (rate limiting disabled): ${message}`,
+    `[rate-limit] valkey unavailable while limiting ${flow} - failing open (rate limiting disabled): ${message}`,
+  );
+}
+
+function logFailClosed(flow: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(
+    `[rate-limit] valkey unavailable while limiting ${flow} - failing closed (verification blocked): ${message}`,
   );
 }
 
@@ -220,8 +227,16 @@ export async function checkTotpConfirmLimit(
       config,
     );
   } catch (error) {
-    logFailOpen("totp confirmation", error);
-    return null;
+    // Fail CLOSED for the TOTP code limiter: it is the only throttle between
+    // an attacker and a 10^6-keyspace 6-digit code, so an unavailable store
+    // must block verification rather than wave it through. The login and
+    // registration limiters stay fail-open — availability of the core
+    // journey outranks their abuse control (documented above).
+    logFailClosed("totp confirmation", error);
+    return {
+      allowed: false,
+      retryAfterSeconds: config.windowSeconds,
+    };
   }
 }
 

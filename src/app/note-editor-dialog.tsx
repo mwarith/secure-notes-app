@@ -332,6 +332,7 @@ export function NoteEditorDialog({
             <Label htmlFor="note-title">Title</Label>
             <Input
               id="note-title"
+              dir="auto"
               name="title"
               autoComplete="off"
               value={title}
@@ -343,6 +344,7 @@ export function NoteEditorDialog({
             <Label htmlFor="note-content">Content</Label>
             <textarea
               id="note-content"
+              dir="auto"
               name="content"
               rows={12}
               value={content}

@@ -18,12 +18,12 @@ export function NoteCard({ note }: { note: NoteSummary }) {
         >
           <div className="min-h-0 overflow-hidden">
             {note.title !== "" && (
-              <span className="mb-1 block line-clamp-2 break-words font-semibold">
+              <span dir="auto" className="mb-1 block line-clamp-2 break-words font-semibold">
                 {note.title}
               </span>
             )}
             {note.content !== "" && (
-              <p className="text-muted-foreground line-clamp-6 break-words whitespace-pre-line text-sm">
+              <p dir="auto" className="text-muted-foreground line-clamp-6 break-words whitespace-pre-line text-sm">
                 {note.content}
               </p>
             )}

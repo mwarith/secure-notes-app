@@ -111,7 +111,7 @@ export function NoteHistory({
               <span className="text-muted-foreground shrink-0 text-xs">
                 {dateFormatter.format(version.createdAt)}
               </span>
-              <span className="truncate">
+              <span dir="auto" className="truncate">
                 {version.title !== "" ? version.title : "(untitled)"}
               </span>
             </button>
@@ -160,10 +160,10 @@ export function NoteHistory({
               </AlertDialogContent>
             </AlertDialog>
           </div>
-          <p className="mt-1 font-semibold">
+          <p dir="auto" className="mt-1 font-semibold">
             {selected.title !== "" ? selected.title : "(untitled)"}
           </p>
-          <p className="text-muted-foreground mt-1 whitespace-pre-line text-sm">
+          <p dir="auto" className="text-muted-foreground mt-1 whitespace-pre-line text-sm">
             {selected.content}
           </p>
           {restoreError && (

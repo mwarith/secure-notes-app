@@ -43,7 +43,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.execute(
-    sql`TRUNCATE users, sessions, notes, note_versions, audit_events`,
+    sql`TRUNCATE users, sessions, notes, note_versions, audit_events, two_factor_recovery_codes`,
   );
 });
 

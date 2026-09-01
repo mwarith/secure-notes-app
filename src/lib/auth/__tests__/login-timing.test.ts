@@ -21,7 +21,7 @@ const db = drizzle(pool);
 beforeEach(async () => {
   vi.mocked(argon2Verify).mockClear();
   await db.execute(
-    sql`TRUNCATE users, sessions, notes, note_versions, audit_events`,
+    sql`TRUNCATE users, sessions, notes, note_versions, audit_events, two_factor_recovery_codes`,
   );
 });
 

@@ -43,7 +43,7 @@ afterEach(() => {
 beforeEach(async () => {
   await valkey.flushdb();
   await db.execute(
-    sql`TRUNCATE users, sessions, notes, note_versions, audit_events`,
+    sql`TRUNCATE users, sessions, notes, note_versions, audit_events, two_factor_recovery_codes`,
   );
   const [user] = await db
     .insert(users)

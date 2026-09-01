@@ -50,12 +50,13 @@ export function CreateNoteDialog({ trigger }: { trigger: ReactNode }) {
           )}
           <div className="space-y-2">
             <Label htmlFor="note-title">Title</Label>
-            <Input id="note-title" name="title" autoComplete="off" />
+            <Input id="note-title" dir="auto" name="title" autoComplete="off" />
           </div>
           <div className="space-y-2">
             <Label htmlFor="note-content">Content</Label>
             <textarea
               id="note-content"
+              dir="auto"
               name="content"
               rows={6}
               className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 flex min-h-16 w-full rounded-lg border bg-transparent px-2.5 py-2 text-base transition-colors outline-none focus-visible:ring-3 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30"

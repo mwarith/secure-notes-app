@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { ShieldCheck } from "lucide-react";
 import { db } from "@/db";
 import { users } from "@/db/schema";
-import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
+import { getActiveSession } from "@/lib/auth/active-session";
 import { TotpSetup } from "./totp-setup";
 
 export const metadata: Metadata = {
@@ -13,14 +12,7 @@ export const metadata: Metadata = {
 };
 
 export default async function SecuritySettingsPage() {
-  const cookieStore = await cookies();
-  const session = await getSession(
-    cookieStore.get(SESSION_COOKIE_NAME)?.value,
-  );
-
-  if (!session) {
-    redirect("/login");
-  }
+  const session = await getActiveSession();
 
   const [user] = await db
     .select({

@@ -61,7 +61,7 @@ export async function loginAction(
     maxAge: SESSION_TTL_SECONDS,
   });
 
-  redirect("/");
+  redirect(result.pending2fa ? "/login/2fa" : "/");
 }
 
 export async function logoutAction(): Promise<void> {

@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Lightbulb, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { logoutAction } from "./(auth)/login/actions";
-import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
+import { getActiveSession, isRedirectError } from "@/lib/auth/active-session";
 import { listNotesForUser } from "@/lib/notes";
 import { CreateNoteDialog } from "./create-note-dialog";
 import { NoteCard } from "./note-card";
@@ -15,12 +14,15 @@ export const metadata: Metadata = {
 };
 
 export default async function WorkspacePage() {
-  const cookieStore = await cookies();
-
-  let session: Awaited<ReturnType<typeof getSession>>;
+  let session: Awaited<ReturnType<typeof getActiveSession>>;
   try {
-    session = await getSession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
-  } catch {
+    session = await getActiveSession();
+  } catch (error) {
+    // getActiveSession signals auth redirects by throwing; those must keep
+    // propagating, not turn into the outage screen.
+    if (isRedirectError(error)) {
+      throw error;
+    }
     return (
       <main className="flex min-h-svh flex-col items-center justify-center gap-2 p-4 text-center">
         <p className="font-semibold">Secure Notes is temporarily unavailable</p>

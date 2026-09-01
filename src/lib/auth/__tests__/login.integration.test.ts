@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
@@ -8,6 +9,7 @@ import { auditEvents, sessions, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
+import { hashSessionToken } from "@/lib/auth/session";
 import { resolveTestDatabaseUrl, resolveTestValkeyUrl } from "../../../../vitest.helpers";
 
 const pool = new Pool({ connectionString: resolveTestDatabaseUrl() });
@@ -144,5 +146,55 @@ describe("login (integration)", () => {
     });
 
     expect(await db.select().from(sessions)).toHaveLength(0);
+  });
+
+  it("creates a pending session for a 2FA-enabled user and reports pending2fa", async () => {
+    const userId = await seedUser();
+    await db
+      .update(users)
+      .set({
+        totpEnabled: true,
+        totpSecretEncrypted: "irrelevant-for-part-1",
+      })
+      .where(eq(users.id, userId));
+
+    const result = await login({ email: EMAIL, password: PASSWORD });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.pending2fa).toBe(true);
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(
+        eq(sessions.tokenHash, hashSessionToken(result.token)),
+      );
+    expect(row.pendingTwoFactor).toBe(true);
+
+    const stored = await valkey.get(
+      `session:${createHash("sha256").update(result.token).digest("hex")}`,
+    );
+    expect(stored).not.toBeNull();
+    if (stored === null) throw new Error("expected the session payload");
+    expect(JSON.parse(stored).pendingTwoFactor).toBe(true);
+  });
+
+  it("creates a non-pending session for a user without two-factor authentication", async () => {
+    await seedUser();
+
+    const result = await login({ email: EMAIL, password: PASSWORD });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.pending2fa).toBe(false);
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(
+        eq(sessions.tokenHash, hashSessionToken(result.token)),
+      );
+    expect(row.pendingTwoFactor).toBe(false);
   });
 });

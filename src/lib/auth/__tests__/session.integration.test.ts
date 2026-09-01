@@ -9,6 +9,7 @@ import { sessions, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import {
+  activateSession,
   createSession,
   destroySession,
   getSession,
@@ -174,6 +175,90 @@ describe("session store (integration)", () => {
     } finally {
       delSpy.mockRestore();
     }
+  });
+
+  it("round-trips a pending two-factor session through payload and DB row", async () => {
+    const { token } = await createSession(userId, {
+      pendingTwoFactor: true,
+    });
+
+    const session = await getSession(token);
+    expect(session).not.toBeNull();
+    expect(session?.pendingTwoFactor).toBe(true);
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.tokenHash, hashSessionToken(token)));
+    expect(row.pendingTwoFactor).toBe(true);
+  });
+
+  it("creates non-pending sessions by default", async () => {
+    const { token } = await createSession(userId);
+
+    const session = await getSession(token);
+    expect(session?.pendingTwoFactor).toBe(false);
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.tokenHash, hashSessionToken(token)));
+    expect(row.pendingTwoFactor).toBe(false);
+  });
+
+  it("activateSession clears the pending flag in both stores and keeps every other field", async () => {
+    const { token, expiresAt } = await createSession(userId, {
+      pendingTwoFactor: true,
+    });
+
+    await activateSession(token);
+
+    const session = await getSession(token);
+    expect(session).not.toBeNull();
+    expect(session?.userId).toBe(userId);
+    expect(session?.expiresAt).toBe(expiresAt.toISOString());
+    expect(session?.pendingTwoFactor).toBe(false);
+
+    const [row] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.tokenHash, hashSessionToken(token)));
+    expect(row).toBeDefined();
+    expect(row.userId).toBe(userId);
+    expect(row.pendingTwoFactor).toBe(false);
+  });
+
+  it("activateSession is a safe no-op for a non-pending, bogus, or missing token", async () => {
+    const { token } = await createSession(userId);
+
+    await expect(activateSession(token)).resolves.toBeUndefined();
+    await expect(activateSession("bogus-token")).resolves.toBeUndefined();
+    await expect(activateSession(undefined)).resolves.toBeUndefined();
+    await expect(activateSession(null)).resolves.toBeUndefined();
+
+    const session = await getSession(token);
+    expect(session?.pendingTwoFactor).toBe(false);
+  });
+
+  it("activateSession cleans up an expired pending session instead of activating it", async () => {
+    const { token } = await createSession(userId, {
+      pendingTwoFactor: true,
+    });
+    await db
+      .update(sessions)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(sessions.tokenHash, hashSessionToken(token)));
+
+    await activateSession(token);
+
+    expect(await getSession(token)).toBeNull();
+    expect(
+      await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.tokenHash, hashSessionToken(token))),
+    ).toHaveLength(0);
+    expect(await valkey.get(valkeyKeyFor(token))).toBeNull();
   });
 });
 

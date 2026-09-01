@@ -119,3 +119,39 @@ Differences between the pre-implementation design above and the schema that actu
 - **Audit event naming**: dot-style `<entity>.<event>` strings per AGENTS.md (`account.created`, `login.success`, `login.failed`, `logout.success`) — the snake_case examples above are superseded.
 - **`users`**: the 2FA columns (`totp_secret`, `totp_enabled`, `recovery_codes_hash`) are deferred to the two-factor tickets and do not exist yet.
 - **`notes`**: `title` / `content` are `not null` without defaults.
+
+---
+
+## As-Built Deltas — 2FA epic (ENG-27/30/31; migrations 0002–0004)
+
+The two-factor tickets shipped their own schema; the deltas below supersede the
+"deferred" note above and the pre-implementation 2FA design in the `users` table.
+
+- **Migration 0002 (ENG-27)** — `users` gained the 2FA columns, renamed and
+  reshaped from the design above:
+  - `totp_secret_encrypted text` (nullable) — the TOTP secret encrypted at rest
+    as `iv:tag:ciphertext` (three base64 segments; AES-256-GCM, 12-byte random
+    IV per write, key from `APP_ENCRYPTION_KEY`). The design's `totp_secret`
+    (plaintext) and `recovery_codes_hash jsonb` are superseded: the recovery
+    codes moved to their own table (below) and only the encrypted TOTP secret
+    lives on `users`.
+  - `totp_enabled boolean NOT NULL DEFAULT false` — null secret = never
+    started; secret + false = setup pending; true = active.
+- **Migration 0003 (ENG-30)** — `sessions.pending_two_factor boolean NOT NULL
+  DEFAULT false`: sessions created by a correct password on a 2FA-enabled
+  account start pending and authenticate only for the challenge; the central
+  active-session gate rejects them everywhere else. The flag lives in both the
+  durable row and the Valkey payload (rewritten whole on activation — see
+  `activateSession` in `src/lib/auth/session.ts` for the ordering rules).
+- **Migration 0004 (ENG-31)** — NEW table `two_factor_recovery_codes` (instead
+  of the designed `users.recovery_codes_hash jsonb`): one row per code,
+  `code_hash` = sha256 of the trimmed/lowercased code (high-entropy random
+  codes — sha256, not Argon2id; reasoning in `src/lib/auth/recovery-codes.ts`),
+  `used_at` nullable — set atomically by the consuming query
+  (`…AND used_at IS NULL RETURNING`), so a code can never be spent twice. Rows
+  cascade with the user; the disable flow deletes all rows for the user.
+- **Audit naming**: the 2FA events shipped as `2fa.enabled`,
+  `2fa.challenge_passed`, `2fa.recovery_used`, `2fa.disabled`,
+  `2fa.recovery_codes_regenerated` (dot-style, per AGENTS.md); replay-rejected
+  and invalid 2FA codes audit as `login.failed` with
+  `outcome: "invalid_totp_code"` / `"invalid_recovery_code"` in metadata.

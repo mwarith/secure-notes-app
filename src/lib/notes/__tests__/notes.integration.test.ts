@@ -260,6 +260,27 @@ describe("createNoteForUser (integration)", () => {
     expect(event.metadata).toEqual({});
   });
 
+  it("snapshots the creation state as the note's first version", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    const result = await createNoteForUser(
+      userId,
+      "  My new note  ",
+      "Private content",
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const versions = await db
+      .select()
+      .from(noteVersions)
+      .where(eq(noteVersions.noteId, result.note.id));
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.noteId).toBe(result.note.id);
+    expect(versions[0]?.title).toBe("My new note");
+    expect(versions[0]?.content).toBe("Private content");
+  });
+
   it("rejects a fully blank note as empty_note", async () => {
     const userId = await seedUser("owner@example.com");
 
@@ -649,30 +670,45 @@ describe("updateNoteForUser version checkpoints (integration)", () => {
     expect(ageMs).toBeLessThan(60 * 1000);
   });
 
-  it("snapshots the first-ever save of a fresh note on either the threshold or checkpoint path", async () => {
+  it("applies the normal rules against the creation version on the first update of a fresh note", async () => {
     const userId = await seedUser("owner@example.com");
-    const noteId = await seedNote(userId, "T", "C");
-    const secondNoteId = await seedNote(userId, "T2", "C2");
+    const created = await createNoteForUser(userId, "T", "C");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const second = await createNoteForUser(userId, "T2", "C2");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const noteId = created.note.id;
+    const secondNoteId = second.note.id;
+
+    const creationFirst = await listVersions(noteId);
+    expect(creationFirst).toHaveLength(1);
+    expect(creationFirst[0]?.title).toBe("T");
+    expect(creationFirst[0]?.content).toBe("C");
+    const creationSecond = await listVersions(secondNoteId);
+    expect(creationSecond).toHaveLength(1);
+    expect(creationSecond[0]?.title).toBe("T2");
 
     await updateNoteForUser(userId, noteId, {
       title: "First title",
       content: "First content",
     });
+    const afterThreshold = await listVersions(noteId);
+    expect(afterThreshold).toHaveLength(1);
+    expect(afterThreshold[0]?.title).toBe("T");
+
     await updateNoteForUser(
       userId,
       secondNoteId,
       { title: "Also first", content: "Also first" },
       { checkpoint: true },
     );
-
-    const first = await listVersions(noteId);
-    expect(first).toHaveLength(1);
-    expect(first[0]?.title).toBe("First title");
-    expect(first[0]?.content).toBe("First content");
-
-    const second = await listVersions(secondNoteId);
-    expect(second).toHaveLength(1);
-    expect(second[0]?.title).toBe("Also first");
+    const afterCheckpoint = await listVersions(secondNoteId);
+    expect(afterCheckpoint).toHaveLength(2);
+    const checkpointVersion = afterCheckpoint.find(
+      (version) => version.title === "Also first",
+    );
+    expect(checkpointVersion?.content).toBe("Also first");
   });
 });
 

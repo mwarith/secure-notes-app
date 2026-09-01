@@ -19,8 +19,12 @@ const VERSION_CHECKPOINT_MS = 5 * 60 * 1000;
  * createNoteForUser follows the same ownership discipline on the write side:
  * the user id is an explicit parameter (never derived from a session inside
  * this module), and the insert plus its note.created audit event share one
- * transaction, so a note never exists without its audit record. Unlike the
- * read functions, a failed create is ordinary validation rather than the
+ * transaction, so a note never exists without its audit record. The same
+ * transaction also snapshots the creation state — the stored trimmed title
+ * and verbatim content — as the note's first Note version, so the creation
+ * state is version #1 (PRD §7) and every later update snapshots against
+ * that baseline under the version boundary rules. Unlike the read
+ * functions, a failed create is ordinary validation rather than the
  * access-denial boundary, so it returns a discriminated union with the
  * specific reason instead of null.
  */
@@ -141,6 +145,12 @@ export async function createNoteForUser(
       .insert(notes)
       .values({ userId, title: titleText.trim(), content: contentText })
       .returning();
+
+    await tx.insert(noteVersions).values({
+      noteId: note.id,
+      title: titleText.trim(),
+      content: contentText,
+    });
 
     await recordAuditEvent(tx, {
       actorUserId: userId,

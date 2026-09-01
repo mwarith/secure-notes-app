@@ -11,7 +11,7 @@ A private document containing a title and content, owned by exactly one user. No
 _Avoid_: document, item, record
 
 **Note version**:
-A saved state of a note — its title and content exactly as a save landed — captured after the update. Any save that differs exactly from the most recent version creates one, throttled to at most once per minute; identical saves never do. The version history is separate from the Audit log: it answers "what did the note say", not "who did what" (PRD §7). Restoring one appends to history rather than overwriting it.
+A saved state of a note — its title and content exactly as a save landed — captured after the update. A version is captured when the user pauses editing for ~10 seconds or finishes an editing session, if the saved state differs from the most recent version; identical saves never create one. The version history is separate from the Audit log: it answers "what did the note say", not "who did what" (PRD §7). Restoring one appends to history rather than overwriting it.
 Restoring a version replaces the note's content and appends a new version — history is never rewritten or deleted.
 _Avoid_: revision, history entry, backup, checkpoint log
 

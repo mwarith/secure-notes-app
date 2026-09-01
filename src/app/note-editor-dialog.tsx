@@ -24,7 +24,11 @@ import {
   resolveSaveIndicator,
   type SaveIndicatorState,
 } from "./save-indicator";
-import { updateNoteAction, type UpdateNoteFormState } from "./actions";
+import {
+  checkpointNoteVersionAction,
+  updateNoteAction,
+  type UpdateNoteFormState,
+} from "./actions";
 import { NoteHistory } from "./note-history";
 import type { NoteSummary } from "@/lib/notes";
 
@@ -33,6 +37,8 @@ const initialState: UpdateNoteFormState = { status: "idle" };
 const AUTOSAVE_DELAY_MS = 2000;
 
 const SAVED_INDICATOR_MS = 2500;
+
+const VERSION_SILENCE_MS = 10_000;
 
 const SAVE_INDICATOR_TEXT: Record<SaveIndicatorState, string> = {
   saving: "Saving…",
@@ -103,6 +109,7 @@ export function NoteEditorDialog({
           fieldsRef.current.content === snapshot.content
         ) {
           setSavedRecently(false);
+          void checkpointNoteVersionAction(note.id).catch(() => undefined);
           setOpen(false);
         }
       }
@@ -116,7 +123,7 @@ export function NoteEditorDialog({
       failedAttemptRef.current = snapshotRef.current;
       snapshotRef.current = null;
     }
-  }, [state]);
+  }, [state, note.id]);
 
   const dispatchSave = useCallback((closeIntent: boolean) => {
     if (snapshotRef.current) return;
@@ -146,6 +153,14 @@ export function NoteEditorDialog({
       autosaveTimerRef.current = null;
     };
   }, [title, content, open, dispatchSave]);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = setTimeout(() => {
+      void checkpointNoteVersionAction(note.id).catch(() => undefined);
+    }, VERSION_SILENCE_MS);
+    return () => clearTimeout(timer);
+  }, [title, content, open, note.id]);
 
   function handleTitleChange(value: string) {
     fieldsRef.current = { ...fieldsRef.current, title: value };
@@ -220,6 +235,7 @@ export function NoteEditorDialog({
       return;
     }
     setSavedRecently(false);
+    void checkpointNoteVersionAction(note.id).catch(() => undefined);
     setOpen(false);
   }
 

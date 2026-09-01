@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import {
+  checkpointNoteVersionForUser,
   createNoteForUser,
   listNoteVersionsForUser,
   restoreNoteVersionForUser,
@@ -157,4 +158,29 @@ export async function restoreNoteVersionAction(
   revalidatePath("/");
 
   return { ok: result !== null };
+}
+
+/**
+ * No revalidatePath: version rows are not rendered on the workspace grid.
+ */
+export async function checkpointNoteVersionAction(
+  noteId: unknown,
+): Promise<{ created: boolean }> {
+  const cookieStore = await cookies();
+  const session = await getSession(
+    cookieStore.get(SESSION_COOKIE_NAME)?.value,
+  );
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  const noteIdText = typeof noteId === "string" ? noteId : null;
+
+  const result = await checkpointNoteVersionForUser(
+    session.userId,
+    noteIdText ?? "",
+  );
+
+  return { created: result?.created ?? false };
 }

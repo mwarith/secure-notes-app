@@ -45,11 +45,16 @@ export default async function WorkspacePage() {
           <span className="text-lg font-semibold tracking-tight">
             Secure Notes
           </span>
-          <form action={logoutAction}>
-            <Button type="submit" variant="ghost">
-              Sign out
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" asChild>
+              <a href="/settings/security">Settings</a>
             </Button>
-          </form>
+            <form action={logoutAction}>
+              <Button type="submit" variant="ghost">
+                Sign out
+              </Button>
+            </form>
+          </div>
         </div>
       </header>
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-12">

@@ -1,15 +1,17 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { auditEvents, noteVersions, notes, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import {
+  checkpointNoteVersionForUser,
   createNoteForUser,
   deleteNoteForUser,
   getNoteForUser,
   listNotesForUser,
   listNoteVersionsForUser,
+  restoreNoteVersionForUser,
   updateNoteForUser,
 } from "@/lib/notes";
 import { resolveTestDatabaseUrl } from "../../../../vitest.helpers";
@@ -531,187 +533,6 @@ describe("updateNoteForUser (integration)", () => {
   });
 });
 
-describe("updateNoteForUser version checkpoints (integration)", () => {
-  async function listVersions(noteId: string) {
-    return db
-      .select()
-      .from(noteVersions)
-      .where(eq(noteVersions.noteId, noteId));
-  }
-
-  it("creates a version row with the post-update values when checkpoint is forced", async () => {
-    const userId = await seedUser("owner@example.com");
-    const noteId = await seedNote(userId, "V1 title", "V1 content");
-
-    const updated = await updateNoteForUser(
-      userId,
-      noteId,
-      { title: "V2 title", content: "V2 content" },
-      { checkpoint: true },
-    );
-
-    expect(updated?.title).toBe("V2 title");
-    expect(updated?.content).toBe("V2 content");
-
-    const versions = await listVersions(noteId);
-    expect(versions).toHaveLength(1);
-    expect(versions[0]?.noteId).toBe(noteId);
-    expect(versions[0]?.title).toBe("V2 title");
-    expect(versions[0]?.content).toBe("V2 content");
-  });
-
-  it("creates no version for a non-checkpoint save within five minutes of the last one", async () => {
-    const userId = await seedUser("owner@example.com");
-    const noteId = await seedNote(userId, "V1 title", "V1 content");
-
-    await updateNoteForUser(
-      userId,
-      noteId,
-      { title: "V2 title", content: "V2 content" },
-      { checkpoint: true },
-    );
-    await updateNoteForUser(userId, noteId, {
-      title: "V3 title",
-      content: "V3 content",
-    });
-
-    const versions = await listVersions(noteId);
-    expect(versions).toHaveLength(1);
-    expect(versions[0]?.title).toBe("V2 title");
-  });
-
-  it("creates a version for a non-checkpoint save once the last version is older than five minutes", async () => {
-    const userId = await seedUser("owner@example.com");
-    const noteId = await seedNote(userId, "V1 title", "V1 content");
-
-    await updateNoteForUser(
-      userId,
-      noteId,
-      { title: "V2 title", content: "V2 content" },
-      { checkpoint: true },
-    );
-    await db
-      .update(noteVersions)
-      .set({ createdAt: new Date(Date.now() - 6 * 60 * 1000) })
-      .where(eq(noteVersions.noteId, noteId));
-
-    await updateNoteForUser(userId, noteId, {
-      title: "V3 title",
-      content: "V3 content",
-    });
-
-    const versions = await listVersions(noteId);
-    expect(versions).toHaveLength(2);
-    const latest = versions.find((version) => version.title === "V3 title");
-    expect(latest?.content).toBe("V3 content");
-  });
-
-  it("creates no version when the saved values are identical to the last version, checkpoint or not", async () => {
-    const userId = await seedUser("owner@example.com");
-    const noteId = await seedNote(userId, "V1 title", "V1 content");
-
-    await updateNoteForUser(
-      userId,
-      noteId,
-      { title: "Same title", content: "Same content" },
-      { checkpoint: true },
-    );
-    await updateNoteForUser(
-      userId,
-      noteId,
-      { title: "Same title", content: "Same content" },
-      { checkpoint: true },
-    );
-    await updateNoteForUser(userId, noteId, {
-      title: "Same title",
-      content: "Same content",
-    });
-
-    const versions = await listVersions(noteId);
-    expect(versions).toHaveLength(1);
-    expect(versions[0]?.title).toBe("Same title");
-  });
-
-  it("leaves neither update nor version behind for a failed update", async () => {
-    const userId = await seedUser("owner@example.com");
-    const noteId = await seedNote(userId, "T", "C");
-
-    const result = await updateNoteForUser(
-      userId,
-      "not-a-uuid",
-      { title: "Hacked" },
-      { checkpoint: true },
-    );
-
-    expect(result).toBeNull();
-    const note = await getNoteForUser(userId, noteId);
-    expect(note?.title).toBe("T");
-    expect(note?.content).toBe("C");
-    expect(await listVersions(noteId)).toHaveLength(0);
-    expect(await db.select().from(auditEvents)).toHaveLength(0);
-  });
-
-  it("stamps a fresh version with a recent createdAt", async () => {
-    const userId = await seedUser("owner@example.com");
-    const noteId = await seedNote(userId, "T", "C");
-
-    await updateNoteForUser(
-      userId,
-      noteId,
-      { title: "New title", content: "New content" },
-      { checkpoint: true },
-    );
-
-    const versions = await listVersions(noteId);
-    expect(versions).toHaveLength(1);
-    const createdAt = versions[0]?.createdAt.getTime() ?? 0;
-    const ageMs = Date.now() - createdAt;
-    expect(ageMs).toBeGreaterThanOrEqual(0);
-    expect(ageMs).toBeLessThan(60 * 1000);
-  });
-
-  it("applies the normal rules against the creation version on the first update of a fresh note", async () => {
-    const userId = await seedUser("owner@example.com");
-    const created = await createNoteForUser(userId, "T", "C");
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    const second = await createNoteForUser(userId, "T2", "C2");
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    const noteId = created.note.id;
-    const secondNoteId = second.note.id;
-
-    const creationFirst = await listVersions(noteId);
-    expect(creationFirst).toHaveLength(1);
-    expect(creationFirst[0]?.title).toBe("T");
-    expect(creationFirst[0]?.content).toBe("C");
-    const creationSecond = await listVersions(secondNoteId);
-    expect(creationSecond).toHaveLength(1);
-    expect(creationSecond[0]?.title).toBe("T2");
-
-    await updateNoteForUser(userId, noteId, {
-      title: "First title",
-      content: "First content",
-    });
-    const afterThreshold = await listVersions(noteId);
-    expect(afterThreshold).toHaveLength(1);
-    expect(afterThreshold[0]?.title).toBe("T");
-
-    await updateNoteForUser(
-      userId,
-      secondNoteId,
-      { title: "Also first", content: "Also first" },
-      { checkpoint: true },
-    );
-    const afterCheckpoint = await listVersions(secondNoteId);
-    expect(afterCheckpoint).toHaveLength(2);
-    const checkpointVersion = afterCheckpoint.find(
-      (version) => version.title === "Also first",
-    );
-    expect(checkpointVersion?.content).toBe("Also first");
-  });
-});
-
 describe("listNoteVersionsForUser (integration)", () => {
   it("lists the owner's versions newest-first with full fields", async () => {
     const userId = await seedUser("owner@example.com");
@@ -721,15 +542,20 @@ describe("listNoteVersionsForUser (integration)", () => {
       userId,
       noteId,
       { title: "V2 title", content: "V2 content" },
-      { checkpoint: true },
     );
+    expect(await checkpointNoteVersionForUser(userId, noteId)).toEqual({
+      created: true,
+    });
     await db
       .update(noteVersions)
-      .set({ createdAt: new Date(Date.now() - 6 * 60 * 1000) })
+      .set({ createdAt: new Date(Date.now() - 2 * 60 * 1000) })
       .where(eq(noteVersions.noteId, noteId));
     await updateNoteForUser(userId, noteId, {
       title: "V3 title",
       content: "V3 content",
+    });
+    expect(await checkpointNoteVersionForUser(userId, noteId)).toEqual({
+      created: true,
     });
 
     const versions = await listNoteVersionsForUser(userId, noteId);
@@ -753,12 +579,13 @@ describe("listNoteVersionsForUser (integration)", () => {
     const ownerId = await seedUser("owner@example.com");
     const attackerId = await seedUser("attacker@example.com");
     const noteId = await seedNote(ownerId, "Private", "Private content");
-    await updateNoteForUser(
-      ownerId,
-      noteId,
-      { title: "Private v2", content: "Private content v2" },
-      { checkpoint: true },
-    );
+    await updateNoteForUser(ownerId, noteId, {
+      title: "Private v2",
+      content: "Private content v2",
+    });
+    expect(await checkpointNoteVersionForUser(ownerId, noteId)).toEqual({
+      created: true,
+    });
 
     expect(await listNoteVersionsForUser(attackerId, noteId)).toEqual([]);
   });
@@ -858,5 +685,263 @@ describe("deleteNoteForUser (integration)", () => {
 
     expect(await getNoteForUser(userId, noteId)).not.toBeNull();
     expect(await db.select().from(auditEvents)).toHaveLength(0);
+  });
+});
+
+describe("restoreNoteVersionForUser (integration)", () => {
+  it("restores the owner's note to a version, appends the restored state, and audits the restore", async () => {
+    const userId = await seedUser("owner@example.com");
+    const created = await createNoteForUser(userId, "V1 title", "V1 content");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const noteId = created.note.id;
+
+    await updateNoteForUser(userId, noteId, {
+      title: "V2 title",
+      content: "V2 content",
+    });
+    expect(await checkpointNoteVersionForUser(userId, noteId)).toEqual({
+      created: true,
+    });
+    const before = await getNoteForUser(userId, noteId);
+    if (!before) throw new Error("expected note to be readable");
+
+    const versionsBefore = await db
+      .select()
+      .from(noteVersions)
+      .where(eq(noteVersions.noteId, noteId));
+    expect(versionsBefore).toHaveLength(2);
+    const creationVersion = versionsBefore.find(
+      (version) => version.title === "V1 title",
+    );
+    if (!creationVersion) throw new Error("expected the creation version");
+
+    const restored = await restoreNoteVersionForUser(
+      userId,
+      noteId,
+      creationVersion.id,
+    );
+
+    expect(restored).not.toBeNull();
+    expect(restored?.id).toBe(noteId);
+    expect(restored?.title).toBe("V1 title");
+    expect(restored?.content).toBe("V1 content");
+    expect(restored?.updatedAt.getTime()).toBeGreaterThan(
+      before.updatedAt.getTime(),
+    );
+
+    const versionsAfter = await db
+      .select()
+      .from(noteVersions)
+      .where(eq(noteVersions.noteId, noteId))
+      .orderBy(desc(noteVersions.createdAt));
+    expect(versionsAfter).toHaveLength(3);
+    expect(versionsAfter[0]?.title).toBe("V1 title");
+    expect(versionsAfter[0]?.content).toBe("V1 content");
+    const priorPairs = versionsAfter
+      .slice(1)
+      .map((version) => `${version.title}|${version.content}`)
+      .sort();
+    expect(priorPairs).toEqual(["V1 title|V1 content", "V2 title|V2 content"]);
+
+    const events = await db.select().from(auditEvents);
+    expect(events).toHaveLength(3);
+    expect(events.filter((event) => event.action === "note.updated")).toHaveLength(1);
+    const [restoredEvent] = events.filter(
+      (event) => event.action === "note.version_restored",
+    );
+    expect(restoredEvent?.actorUserId).toBe(userId);
+    expect(restoredEvent?.resourceType).toBe("note");
+    expect(restoredEvent?.resourceId).toBe(noteId);
+    expect(restoredEvent?.metadata).toEqual({
+      restoredVersionId: creationVersion.id,
+    });
+  });
+
+  it("restores nothing for another user's note and leaves it fully untouched", async () => {
+    const ownerId = await seedUser("owner@example.com");
+    const attackerId = await seedUser("attacker@example.com");
+    const created = await createNoteForUser(
+      ownerId,
+      "Private",
+      "Private content",
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const noteId = created.note.id;
+    const versions = await db
+      .select()
+      .from(noteVersions)
+      .where(eq(noteVersions.noteId, noteId));
+    const versionId = versions[0]?.id;
+    if (!versionId) throw new Error("expected the creation version");
+    const before = await getNoteForUser(ownerId, noteId);
+    if (!before) throw new Error("expected note to be readable");
+
+    expect(
+      await restoreNoteVersionForUser(attackerId, noteId, versionId),
+    ).toBeNull();
+
+    expect(await getNoteForUser(ownerId, noteId)).toEqual(before);
+    expect(
+      await db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)),
+    ).toHaveLength(1);
+    const events = await db.select().from(auditEvents);
+    expect(events.map((event) => event.action)).toEqual(["note.created"]);
+  });
+
+  it("returns null for a nonexistent but well-formed version id", async () => {
+    const userId = await seedUser("owner@example.com");
+    const created = await createNoteForUser(userId, "T", "C");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(
+      await restoreNoteVersionForUser(
+        userId,
+        created.note.id,
+        "00000000-0000-4000-8000-000000000000",
+      ),
+    ).toBeNull();
+    expect(
+      (await db.select().from(auditEvents)).map((event) => event.action),
+    ).toEqual(["note.created"]);
+  });
+
+  it("returns null for malformed ids without a database error", async () => {
+    const userId = await seedUser("owner@example.com");
+    const created = await createNoteForUser(userId, "T", "C");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const noteId = created.note.id;
+    const versions = await db
+      .select()
+      .from(noteVersions)
+      .where(eq(noteVersions.noteId, noteId));
+    const versionId = versions[0]?.id;
+    if (!versionId) throw new Error("expected the creation version");
+
+    expect(
+      await restoreNoteVersionForUser("not-a-uuid", noteId, versionId),
+    ).toBeNull();
+    expect(
+      await restoreNoteVersionForUser(userId, "not-a-uuid", versionId),
+    ).toBeNull();
+    expect(
+      await restoreNoteVersionForUser(userId, noteId, "not-a-uuid"),
+    ).toBeNull();
+    expect(
+      (await db.select().from(auditEvents)).map((event) => event.action),
+    ).toEqual(["note.created"]);
+  });
+});
+
+describe("checkpointNoteVersionForUser (integration)", () => {
+  it("snapshots the current state when it differs from the most recent version", async () => {
+    const userId = await seedUser("owner@example.com");
+    const created = await createNoteForUser(userId, "T", "C");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const noteId = created.note.id;
+
+    await updateNoteForUser(userId, noteId, {
+      title: "New",
+      content: "Content",
+    });
+    expect(
+      await db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)),
+    ).toHaveLength(1);
+
+    expect(await checkpointNoteVersionForUser(userId, noteId)).toEqual({
+      created: true,
+    });
+
+    const versions = await db
+      .select()
+      .from(noteVersions)
+      .where(eq(noteVersions.noteId, noteId))
+      .orderBy(desc(noteVersions.createdAt));
+    expect(versions).toHaveLength(2);
+    expect(versions[0]?.title).toBe("New");
+    expect(versions[0]?.content).toBe("Content");
+    expect(versions[1]?.title).toBe("T");
+    expect(versions[1]?.content).toBe("C");
+    expect(
+      (await db.select().from(auditEvents)).map((event) => event.action),
+    ).toEqual(["note.created", "note.updated"]);
+  });
+
+  it("snapshots nothing when the current state matches the most recent version", async () => {
+    const userId = await seedUser("owner@example.com");
+    const created = await createNoteForUser(userId, "T", "C");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const noteId = created.note.id;
+
+    await updateNoteForUser(userId, noteId, {
+      title: "New",
+      content: "Content",
+    });
+    expect(await checkpointNoteVersionForUser(userId, noteId)).toEqual({
+      created: true,
+    });
+    expect(await checkpointNoteVersionForUser(userId, noteId)).toEqual({
+      created: false,
+    });
+
+    expect(
+      await db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)),
+    ).toHaveLength(2);
+  });
+
+  it("returns null for another user's note and writes nothing", async () => {
+    const ownerId = await seedUser("owner@example.com");
+    const attackerId = await seedUser("attacker@example.com");
+    const created = await createNoteForUser(
+      ownerId,
+      "Private",
+      "Private content",
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const noteId = created.note.id;
+
+    expect(await checkpointNoteVersionForUser(attackerId, noteId)).toBeNull();
+
+    expect(
+      await db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)),
+    ).toHaveLength(1);
+    expect(
+      (await db.select().from(auditEvents)).map((event) => event.action),
+    ).toEqual(["note.created"]);
+  });
+
+  it("returns null for a nonexistent but well-formed note id", async () => {
+    const userId = await seedUser("owner@example.com");
+
+    expect(
+      await checkpointNoteVersionForUser(
+        userId,
+        "00000000-0000-4000-8000-000000000000",
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null for malformed ids without a database error", async () => {
+    expect(
+      await checkpointNoteVersionForUser(
+        "not-a-uuid",
+        "00000000-0000-4000-8000-000000000000",
+      ),
+    ).toBeNull();
+    expect(
+      await checkpointNoteVersionForUser(
+        "00000000-0000-4000-8000-000000000000",
+        "not-a-uuid",
+      ),
+    ).toBeNull();
+    expect(
+      await checkpointNoteVersionForUser("not-a-uuid", "also-bad"),
+    ).toBeNull();
   });
 });

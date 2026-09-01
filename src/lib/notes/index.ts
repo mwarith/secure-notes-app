@@ -3,8 +3,6 @@ import { db } from "@/db";
 import { noteVersions, notes } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 
-const VERSION_CHECKPOINT_MS = 5 * 60 * 1000;
-
 /**
  * Ownership-scoped Note reads (PRD §6, §15; CONTEXT.md "Ownership-scoped
  * query").
@@ -117,6 +115,81 @@ export async function listNoteVersionsForUser(
 }
 
 /**
+ * Restores an owned note to one of its versions through the same
+ * ownership-scoped boundary as the reads: the version is fetched via a
+ * single join filtered by the version id, the note id, and the user id, so
+ * a foreign note, a foreign version, and a nonexistent version are all
+ * indistinguishable — null. Malformed ids are rejected before the database
+ * sees them.
+ *
+ * The note's title and content are replaced by the version's stored state,
+ * and the restored state is appended as a NEW Note version in the same
+ * transaction: history is append-only (PRD §7) — never rewritten or
+ * deleted — so creation is unconditional and the dedupe/threshold boundary
+ * rules deliberately do not apply here. One user action produces exactly
+ * one audit event, note.version_restored, with the restored version's id
+ * in metadata for lineage; no note.updated event is written. Restore,
+ * version append, and audit commit or roll back together.
+ */
+export async function restoreNoteVersionForUser(
+  userId: string,
+  noteId: string,
+  versionId: string,
+): Promise<Note | null> {
+  if (!isUuid(userId) || !isUuid(noteId) || !isUuid(versionId)) {
+    return null;
+  }
+
+  return db.transaction(async (tx) => {
+    const [version] = await tx
+      .select({
+        title: noteVersions.title,
+        content: noteVersions.content,
+      })
+      .from(noteVersions)
+      .innerJoin(notes, eq(noteVersions.noteId, notes.id))
+      .where(
+        and(
+          eq(noteVersions.id, versionId),
+          eq(notes.id, noteId),
+          eq(notes.userId, userId),
+        ),
+      )
+      .limit(1);
+
+    if (!version) {
+      return null;
+    }
+
+    const [note] = await tx
+      .update(notes)
+      .set({ title: version.title, content: version.content })
+      .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
+      .returning();
+
+    if (!note) {
+      return null;
+    }
+
+    await tx.insert(noteVersions).values({
+      noteId: note.id,
+      title: version.title,
+      content: version.content,
+    });
+
+    await recordAuditEvent(tx, {
+      actorUserId: userId,
+      resourceType: "note",
+      resourceId: noteId,
+      action: "note.version_restored",
+      metadata: { restoredVersionId: versionId },
+    });
+
+    return note;
+  });
+}
+
+/**
  * A note may have only a title, only content, or both; it is rejected as
  * empty_note only when both are blank after trimming. Missing or non-string
  * form fields are treated as empty strings, since server actions receive
@@ -183,22 +256,11 @@ export async function createNoteForUser(
  * bump, and no audit event. A successful update writes note.updated in the
  * same transaction as the UPDATE, so a state change never lands without
  * its audit record.
- *
- * When the update succeeds, a Note version snapshot may be captured in the
- * same transaction (PRD §7). A version records a saved state: it stores the
- * post-update title and content. The boundary rule — insert a version when
- * no prior version exists for the note, or when the saved values differ
- * exactly from the most recent version AND either the caller forced a
- * checkpoint (the editor closing) or at least VERSION_CHECKPOINT_MS have
- * passed since that version was created. Identical-value saves never
- * snapshot, and routine snapshots write no audit event (restoration is
- * ENG-23). Update, optional version, and audit commit or roll back together.
  */
 export async function updateNoteForUser(
   userId: string,
   noteId: string,
   changes: { title?: string; content?: string },
-  options?: { checkpoint?: boolean },
 ): Promise<Note | null> {
   if (!isUuid(userId) || !isUuid(noteId)) {
     return null;
@@ -227,33 +289,6 @@ export async function updateNoteForUser(
       return null;
     }
 
-    const [lastVersion] = await tx
-      .select()
-      .from(noteVersions)
-      .where(eq(noteVersions.noteId, note.id))
-      .orderBy(desc(noteVersions.createdAt))
-      .limit(1);
-
-    let shouldSnapshot: boolean;
-    if (!lastVersion) {
-      shouldSnapshot = true;
-    } else {
-      const differs =
-        lastVersion.title !== note.title ||
-        lastVersion.content !== note.content;
-      const due =
-        Date.now() - lastVersion.createdAt.getTime() >= VERSION_CHECKPOINT_MS;
-      shouldSnapshot = differs && (options?.checkpoint === true || due);
-    }
-
-    if (shouldSnapshot) {
-      await tx.insert(noteVersions).values({
-        noteId: note.id,
-        title: note.title,
-        content: note.content,
-      });
-    }
-
     await recordAuditEvent(tx, {
       actorUserId: userId,
       resourceType: "note",
@@ -264,6 +299,64 @@ export async function updateNoteForUser(
 
     return note;
   });
+}
+
+/**
+ * Captures a Note version of an owned note's current state. The trigger is
+ * client-driven — the user has been silent for a while, or an editing
+ * session just ended — so the server's only guard is the dedupe: the
+ * snapshot is written only when the note's current title/content differ
+ * exactly from the most recent version (or no version exists, which the
+ * creation baseline makes rare). There is deliberately no throttle or
+ * spacing rule — the client's silence timer is the rate limiter — and the
+ * version history captures the states the user actually stopped on.
+ *
+ * Routine snapshots write no audit event (restoration is ENG-25's
+ * note.version_restored). The ownership-scoped read makes denied and
+ * nonexistent notes indistinguishable — null, exactly as getNoteForUser
+ * would return; malformed ids are rejected before the database sees them.
+ */
+export async function checkpointNoteVersionForUser(
+  userId: string,
+  noteId: string,
+): Promise<{ created: boolean } | null> {
+  if (!isUuid(userId) || !isUuid(noteId)) {
+    return null;
+  }
+
+  const [note] = await db
+    .select()
+    .from(notes)
+    .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
+    .limit(1);
+
+  if (!note) {
+    return null;
+  }
+
+  const [lastVersion] = await db
+    .select()
+    .from(noteVersions)
+    .where(eq(noteVersions.noteId, note.id))
+    .orderBy(desc(noteVersions.createdAt))
+    .limit(1);
+
+  const differs =
+    !lastVersion ||
+    lastVersion.title !== note.title ||
+    lastVersion.content !== note.content;
+
+  if (!differs) {
+    return { created: false };
+  }
+
+  await db.insert(noteVersions).values({
+    noteId: note.id,
+    title: note.title,
+    content: note.content,
+  });
+
+  return { created: true };
 }
 
 /**

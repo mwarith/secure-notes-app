@@ -24,7 +24,11 @@ import {
   resolveSaveIndicator,
   type SaveIndicatorState,
 } from "./save-indicator";
-import { updateNoteAction, type UpdateNoteFormState } from "./actions";
+import {
+  checkpointNoteVersionAction,
+  updateNoteAction,
+  type UpdateNoteFormState,
+} from "./actions";
 import { NoteHistory } from "./note-history";
 import type { NoteSummary } from "@/lib/notes";
 
@@ -33,6 +37,8 @@ const initialState: UpdateNoteFormState = { status: "idle" };
 const AUTOSAVE_DELAY_MS = 2000;
 
 const SAVED_INDICATOR_MS = 2500;
+
+const VERSION_SILENCE_MS = 10_000;
 
 const SAVE_INDICATOR_TEXT: Record<SaveIndicatorState, string> = {
   saving: "Saving…",
@@ -58,7 +64,6 @@ export function NoteEditorDialog({
   const [content, setContent] = useState(note.content);
   const [savedRecently, setSavedRecently] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
-  const checkpointInputRef = useRef<HTMLInputElement>(null);
   const fieldsRef = useRef<EditorFields>({
     title: note.title,
     content: note.content,
@@ -104,6 +109,7 @@ export function NoteEditorDialog({
           fieldsRef.current.content === snapshot.content
         ) {
           setSavedRecently(false);
+          void checkpointNoteVersionAction(note.id).catch(() => undefined);
           setOpen(false);
         }
       }
@@ -117,20 +123,14 @@ export function NoteEditorDialog({
       failedAttemptRef.current = snapshotRef.current;
       snapshotRef.current = null;
     }
-  }, [state]);
+  }, [state, note.id]);
 
   const dispatchSave = useCallback((closeIntent: boolean) => {
     if (snapshotRef.current) return;
     snapshotRef.current = { ...fieldsRef.current };
     closeIntentRef.current = closeIntent;
     setSavedRecently(false);
-    if (checkpointInputRef.current) {
-      checkpointInputRef.current.value = closeIntent ? "true" : "false";
-    }
     formRef.current?.requestSubmit();
-    if (checkpointInputRef.current) {
-      checkpointInputRef.current.value = "false";
-    }
   }, []);
 
   useEffect(() => {
@@ -153,6 +153,14 @@ export function NoteEditorDialog({
       autosaveTimerRef.current = null;
     };
   }, [title, content, open, dispatchSave]);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = setTimeout(() => {
+      void checkpointNoteVersionAction(note.id).catch(() => undefined);
+    }, VERSION_SILENCE_MS);
+    return () => clearTimeout(timer);
+  }, [title, content, open, note.id]);
 
   function handleTitleChange(value: string) {
     fieldsRef.current = { ...fieldsRef.current, title: value };
@@ -227,6 +235,7 @@ export function NoteEditorDialog({
       return;
     }
     setSavedRecently(false);
+    void checkpointNoteVersionAction(note.id).catch(() => undefined);
     setOpen(false);
   }
 
@@ -264,7 +273,13 @@ export function NoteEditorDialog({
         </DialogHeader>
         {historyOpen && (
           <div className="border-t pt-3">
-            <NoteHistory noteId={note.id} />
+            <NoteHistory
+              noteId={note.id}
+              onRestored={() => {
+                setHistoryOpen(false);
+                setOpen(false);
+              }}
+            />
           </div>
         )}
         <form
@@ -279,7 +294,6 @@ export function NoteEditorDialog({
           }}
         >
           <input type="hidden" name="noteId" value={note.id} />
-          <input ref={checkpointInputRef} type="hidden" name="checkpoint" />
           {state.status === "error" && (
             <p className="text-destructive text-sm">{state.message}</p>
           )}

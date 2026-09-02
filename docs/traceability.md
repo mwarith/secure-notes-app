@@ -26,7 +26,7 @@ Maps PRD requirements to the tickets that implement them. Maintained incremental
 | §10–§11 Logging & Metrics | Infra provisioned (ENG-1); JSON logger + counter seams (ENG-15) — pino swap pending (ENG-16) | ENG-1, ENG-15 | Merged; ENG-16 pending |
 | §13 Automated Testing | 245 tests (unit + integration) shipped per-ticket, red-green | per-ticket | Ongoing |
 
-Not yet started: §9 error experience (ENG-33–35), UX fixes from product-owner testing (ENG-50), §10–§12 instrumentation details (ENG-16 pino swap, ENG-39 metrics endpoint, ENG-40 Grafana dashboards), §12 stress testing (ENG-41), §13 coverage sweep (ENG-42), §14 Playwright (ENG-43), docs pass (ENG-44), polish (ENG-45/46), demo dry run (ENG-51). Merged from that list: RTL support for note content (ENG-47, PR #28 — product-owner finding; covers note card, editor dialog, version history, and create-note dialog surfaces), the scrollable version history panel (ENG-48, PR #29), and the register-page cross-link (ENG-49, PR #30).
+Not yet started: §9 error experience (ENG-33–35), §10–§12 instrumentation details (ENG-16 pino swap, ENG-39 metrics endpoint, ENG-40 Grafana dashboards), §12 stress testing (ENG-41), §13 coverage sweep (ENG-42), §14 Playwright (ENG-43), docs pass (ENG-44), polish (ENG-45/46), demo dry run (ENG-51). Merged from the product-owner UX list: RTL support for note content (ENG-47, PR #28; covers note card, editor dialog, version history, and create-note dialog surfaces), the scrollable version history panel (ENG-48, PR #29), the register-page cross-link (ENG-49, PR #30), and create-note dismissal saving the note (ENG-50, PR #31).
 
 ## Known limitations
 

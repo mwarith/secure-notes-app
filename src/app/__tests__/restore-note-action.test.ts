@@ -7,6 +7,8 @@ import { auditEvents, noteVersions, notes, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
+import { restoreNoteVersionForUser } from "@/lib/notes";
+import { readCounter } from "@/lib/metrics";
 import { restoreNoteVersionAction } from "@/app/actions";
 import {
   resolveTestDatabaseUrl,
@@ -32,6 +34,14 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
+
+vi.mock("@/lib/notes", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/notes")>();
+  return {
+    ...actual,
+    restoreNoteVersionForUser: vi.fn(actual.restoreNoteVersionForUser),
+  };
+});
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -159,5 +169,44 @@ describe("restoreNoteVersionAction (integration)", () => {
       await restoreNoteVersionAction(foreignNoteId, foreignVersionId),
     ).toEqual({ ok: false });
     expect(await db.select().from(auditEvents)).toEqual([]);
+  });
+
+  it("captures an unexpected failure and returns { ok: false } without leaking raw error text", async () => {
+    const userId = await seedSession();
+    const noteId = await seedNote(userId);
+    const versionId = await seedVersion(
+      noteId,
+      "Version title",
+      "Version content",
+      new Date(),
+    );
+    vi.mocked(restoreNoteVersionForUser).mockRejectedValueOnce(
+      new Error("restore transaction deadlocked"),
+    );
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.operational");
+
+      const result = await restoreNoteVersionAction(noteId, versionId);
+
+      expect(result).toEqual({ ok: false });
+      expect(await db.select().from(auditEvents)).toEqual([]);
+      expect(readCounter("errors.operational")).toBe(before + 1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("warn");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("operational");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

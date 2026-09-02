@@ -7,6 +7,8 @@ import { auditEvents, notes, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
+import { createNoteForUser } from "@/lib/notes";
+import { readCounter } from "@/lib/metrics";
 import { createNoteAction } from "@/app/actions";
 import { revalidatePath } from "next/cache";
 import {
@@ -33,6 +35,14 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
+
+vi.mock("@/lib/notes", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/notes")>();
+  return {
+    ...actual,
+    createNoteForUser: vi.fn(actual.createNoteForUser),
+  };
+});
 
 import { redirect } from "next/navigation";
 
@@ -144,5 +154,44 @@ describe("createNoteAction (integration)", () => {
     expect(await db.select().from(notes)).toHaveLength(0);
     expect(await db.select().from(auditEvents)).toHaveLength(0);
     expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("captures an unexpected failure and returns the safe message without leaking raw error text", async () => {
+    await seedSession();
+    vi.mocked(createNoteForUser).mockRejectedValueOnce(
+      new Error("notes table vanished mid-create"),
+    );
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.operational");
+
+      const state = await createNoteAction(
+        { status: "idle" },
+        makeForm("My title", "My content"),
+      );
+
+      expect(state).toEqual({
+        status: "error",
+        message: "Unable to save the note right now. Please try again.",
+      });
+      expect(await db.select().from(notes)).toHaveLength(0);
+      expect(await db.select().from(auditEvents)).toHaveLength(0);
+      expect(readCounter("errors.operational")).toBe(before + 1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("warn");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("operational");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

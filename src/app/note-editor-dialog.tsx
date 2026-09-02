@@ -42,9 +42,31 @@ import {
   type UpdateNoteFormState,
 } from "./actions";
 import { NoteHistory } from "./note-history";
+import { AppError, reportError } from "@/lib/errors";
+import { isNextRedirect } from "@/lib/next-redirect";
 import type { NoteSummary } from "@/lib/notes";
 
 const initialState: UpdateNoteFormState = { status: "idle" };
+
+const DELETE_ERROR_MESSAGE = "Couldn't delete this note. Please try again.";
+const CHECKPOINT_FAILURE_MESSAGE = "Couldn't capture this version.";
+
+/**
+ * Last-resort capture for a checkpoint that never resolved normally (a
+ * network-level failure of the action call itself). Infrastructure
+ * failures that reach the server are captured in the action; a redirect
+ * re-throw is navigation, not a failure.
+ */
+function captureCheckpointFailure(error: unknown): void {
+  if (isNextRedirect(error)) return;
+  reportError(
+    new AppError({
+      class: "operational",
+      userMessage: CHECKPOINT_FAILURE_MESSAGE,
+    }),
+    { message: CHECKPOINT_FAILURE_MESSAGE },
+  );
+}
 
 const AUTOSAVE_DELAY_MS = 2000;
 
@@ -74,6 +96,7 @@ export function NoteEditorDialog({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
   const [savedRecently, setSavedRecently] = useState(false);
@@ -123,7 +146,9 @@ export function NoteEditorDialog({
           fieldsRef.current.content === snapshot.content
         ) {
           setSavedRecently(false);
-          void checkpointNoteVersionAction(note.id).catch(() => undefined);
+          void checkpointNoteVersionAction(note.id).catch(
+            captureCheckpointFailure,
+          );
           setOpen(false);
         }
       }
@@ -171,7 +196,7 @@ export function NoteEditorDialog({
   useEffect(() => {
     if (!open) return;
     const timer = setTimeout(() => {
-      void checkpointNoteVersionAction(note.id).catch(() => undefined);
+      void checkpointNoteVersionAction(note.id).catch(captureCheckpointFailure);
     }, VERSION_SILENCE_MS);
     return () => clearTimeout(timer);
   }, [title, content, open, note.id]);
@@ -249,19 +274,33 @@ export function NoteEditorDialog({
       return;
     }
     setSavedRecently(false);
-    void checkpointNoteVersionAction(note.id).catch(() => undefined);
+    void checkpointNoteVersionAction(note.id).catch(captureCheckpointFailure);
     setOpen(false);
   }
 
+  /**
+   * A failed delete keeps the confirmation dialog open with a visible error
+   * so a destructive action can never fail silently (PRD §9): the bare
+   * ok:false no-op (already deleted or foreign note) is deliberately not an
+   * error and closes as usual; only a classified failure keeps it open.
+   * Cancel stays available in every state.
+   */
   async function handleDelete() {
+    setDeleteError(null);
     setIsDeleting(true);
     try {
-      await deleteNoteAction(note.id);
-    } finally {
-      setIsDeleting(false);
+      const result = await deleteNoteAction(note.id);
+      if (!result.ok && result.error !== undefined) {
+        setDeleteError(result.error);
+        return;
+      }
       setDeleteOpen(false);
       setHistoryOpen(false);
       setOpen(false);
+    } catch {
+      setDeleteError(DELETE_ERROR_MESSAGE);
+    } finally {
+      setIsDeleting(false);
     }
   }
 
@@ -358,6 +397,7 @@ export function NoteEditorDialog({
           <AlertDialog
             open={deleteOpen}
             onOpenChange={(next) => {
+              if (next) setDeleteError(null);
               if (!isDeleting) setDeleteOpen(next);
             }}
           >
@@ -379,6 +419,9 @@ export function NoteEditorDialog({
                   This can&apos;t be undone.
                 </AlertDialogDescription>
               </AlertDialogHeader>
+              {deleteError !== null && (
+                <p className="text-destructive text-sm">{deleteError}</p>
+              )}
               <AlertDialogFooter>
                 <AlertDialogCancel variant="ghost" disabled={isDeleting}>
                   Cancel
@@ -388,7 +431,7 @@ export function NoteEditorDialog({
                   disabled={isDeleting}
                   onClick={(event) => {
                     event.preventDefault();
-                    void handleDelete().catch(() => undefined);
+                    void handleDelete();
                   }}
                 >
                   {isDeleting ? "Deleting…" : "Delete"}

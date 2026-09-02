@@ -7,7 +7,15 @@ import { auditEvents, noteVersions, notes, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
-import { listNoteVersionsAction } from "@/app/actions";
+import {
+  checkpointNoteVersionForUser,
+  listNoteVersionsForUser,
+} from "@/lib/notes";
+import { readCounter } from "@/lib/metrics";
+import {
+  checkpointNoteVersionAction,
+  listNoteVersionsAction,
+} from "@/app/actions";
 import {
   resolveTestDatabaseUrl,
   resolveTestValkeyUrl,
@@ -32,6 +40,15 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
+
+vi.mock("@/lib/notes", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/notes")>();
+  return {
+    ...actual,
+    checkpointNoteVersionForUser: vi.fn(actual.checkpointNoteVersionForUser),
+    listNoteVersionsForUser: vi.fn(actual.listNoteVersionsForUser),
+  };
+});
 
 import { redirect } from "next/navigation";
 
@@ -154,5 +171,73 @@ describe("listNoteVersionsAction (integration)", () => {
     );
 
     expect(await listNoteVersionsAction(foreignNoteId)).toEqual([]);
+  });
+
+  it("captures an unexpected load failure and rejects with the safe message", async () => {
+    const userId = await seedSession();
+    const noteId = await seedNote(userId);
+    vi.mocked(listNoteVersionsForUser).mockRejectedValueOnce(
+      new Error("version join exploded during load"),
+    );
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.operational");
+
+      await expect(listNoteVersionsAction(noteId)).rejects.toThrow(
+        "Couldn't load history.",
+      );
+
+      expect(readCounter("errors.operational")).toBe(before + 1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("warn");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("operational");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+describe("checkpointNoteVersionAction (integration)", () => {
+  it("captures an unexpected failure and reports no version created", async () => {
+    const userId = await seedSession();
+    const noteId = await seedNote(userId);
+    vi.mocked(checkpointNoteVersionForUser).mockRejectedValueOnce(
+      new Error("version insert failed during checkpoint"),
+    );
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.operational");
+
+      const result = await checkpointNoteVersionAction(noteId);
+
+      expect(result).toEqual({ created: false });
+      expect(await db.select().from(auditEvents)).toEqual([]);
+      expect(readCounter("errors.operational")).toBe(before + 1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("warn");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("operational");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

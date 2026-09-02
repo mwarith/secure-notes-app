@@ -2,6 +2,13 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { noteVersions, notes } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
+import {
+  delNotesCache,
+  getNotesCache,
+  notesListKey,
+  notesNoteKey,
+  setNotesCache,
+} from "@/lib/cache";
 
 /**
  * Ownership-scoped Note reads (PRD §6, §15; CONTEXT.md "Ownership-scoped
@@ -25,7 +32,49 @@ import { recordAuditEvent } from "@/lib/audit";
  * functions, a failed create is ordinary validation rather than the
  * access-denial boundary, so it returns a discriminated union with the
  * specific reason instead of null.
+ *
+ * Read-through cache (ENG-37, over the ENG-36 helper): the two hot reads —
+ * listNotesForUser and getNoteForUser — consult Valkey first via
+ * user-specific keys (notes:list:{userId}, notes:note:{userId}:{noteId}),
+ * so a cached hit can never leak another user's notes and a foreign or
+ * not-found read is indistinguishable from a cache miss. On a miss the
+ * ownership-scoped query runs exactly as before and the result is stored
+ * with NOTES_CACHE_TTL_SECONDS; an empty list is a value and is cached,
+ * while a null note read (not-found/foreign) is NEVER cached. Malformed-id
+ * early returns stay ahead of any cache or database contact. Writes never
+ * populate the cache (no write-through); only reads refill after a miss.
+ *
+ * Invalidation is post-commit: after a successful write transaction
+ * resolves, the affected keys are deleted (create → list key; a new note's
+ * note key cannot exist yet because null is never cached; update, delete,
+ * and restore → list + note keys). Failed writes (null/false returns)
+ * wrote nothing and invalidate nothing; the no-op update path returns
+ * through the cached read and is not a write. delNotesCache is bounded —
+ * a failed invalidation logs one warn and degrades, never breaking the
+ * write's own success — and the TTL bounds staleness to
+ * NOTES_CACHE_TTL_SECONDS when invalidation could not run (e.g. Valkey
+ * down at write time). Cached hits revive Date fields as real Dates, so a
+ * hit equals the DB row it stands for.
+ *
+ * Deliberately NOT cached: listNoteVersionsForUser (version history stays
+ * DB-only) and checkpointNoteVersionForUser (it writes a version, never
+ * note state, so there is nothing to invalidate).
  */
+export const NOTES_CACHE_TTL_SECONDS = 60;
+
+/**
+ * The cache key for a note is invalidated after every successful write to
+ * that note, so the TTL is only a staleness bound for the window where
+ * invalidation itself failed (e.g. Valkey was down at write time); the
+ * next successful write's invalidation or the TTL expiry ends it.
+ */
+
+async function invalidateNoteKeys(userId: string, noteId: string): Promise<void> {
+  await Promise.all([
+    delNotesCache(notesListKey(userId)),
+    delNotesCache(notesNoteKey(userId, noteId)),
+  ]);
+}
 
 export type Note = typeof notes.$inferSelect;
 
@@ -58,13 +107,24 @@ export async function getNoteForUser(
     return null;
   }
 
+  const cached = await getNotesCache<Note>(notesNoteKey(userId, noteId));
+  if (cached !== null) {
+    return cached;
+  }
+
   const [note] = await db
     .select()
     .from(notes)
     .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
     .limit(1);
 
-  return note ?? null;
+  if (!note) {
+    // Never cache null: not-found and foreign reads stay uncached.
+    return null;
+  }
+
+  await setNotesCache(notesNoteKey(userId, noteId), note, NOTES_CACHE_TTL_SECONDS);
+  return note;
 }
 
 export async function listNotesForUser(userId: string): Promise<NoteSummary[]> {
@@ -72,7 +132,12 @@ export async function listNotesForUser(userId: string): Promise<NoteSummary[]> {
     return [];
   }
 
-  return db
+  const cached = await getNotesCache<NoteSummary[]>(notesListKey(userId));
+  if (cached !== null) {
+    return cached;
+  }
+
+  const summaries = await db
     .select({
       id: notes.id,
       title: notes.title,
@@ -83,6 +148,9 @@ export async function listNotesForUser(userId: string): Promise<NoteSummary[]> {
     .from(notes)
     .where(eq(notes.userId, userId))
     .orderBy(desc(notes.updatedAt));
+
+  await setNotesCache(notesListKey(userId), summaries, NOTES_CACHE_TTL_SECONDS);
+  return summaries;
 }
 
 /**
@@ -140,7 +208,7 @@ export async function restoreNoteVersionForUser(
     return null;
   }
 
-  return db.transaction(async (tx) => {
+  const note = await db.transaction(async (tx) => {
     const [version] = await tx
       .select({
         title: noteVersions.title,
@@ -187,6 +255,14 @@ export async function restoreNoteVersionForUser(
 
     return note;
   });
+
+  if (note) {
+    // Post-commit: a null return (not-found/foreign) wrote nothing and
+    // invalidates nothing.
+    await invalidateNoteKeys(userId, noteId);
+  }
+
+  return note;
 }
 
 /**
@@ -213,7 +289,7 @@ export async function createNoteForUser(
     return { ok: false, reason: "empty_note" };
   }
 
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const [note] = await tx
       .insert(notes)
       .values({ userId, title: titleText.trim(), content: contentText })
@@ -233,8 +309,16 @@ export async function createNoteForUser(
       metadata: {},
     });
 
-    return { ok: true, note };
+    return { ok: true as const, note };
   });
+
+  if (result.ok) {
+    // Post-commit: a new noteId's note key cannot exist yet (null is never
+    // cached), so only the list key can be stale.
+    await delNotesCache(notesListKey(userId));
+  }
+
+  return result;
 }
 
 /**
@@ -278,7 +362,7 @@ export async function updateNoteForUser(
     return getNoteForUser(userId, noteId);
   }
 
-  return db.transaction(async (tx) => {
+  const note = await db.transaction(async (tx) => {
     const [note] = await tx
       .update(notes)
       .set(updates)
@@ -299,6 +383,14 @@ export async function updateNoteForUser(
 
     return note;
   });
+
+  if (note) {
+    // Post-commit: a null return (not-found/foreign) wrote nothing and
+    // invalidates nothing.
+    await invalidateNoteKeys(userId, noteId);
+  }
+
+  return note;
 }
 
 /**
@@ -383,7 +475,7 @@ export async function deleteNoteForUser(
     return false;
   }
 
-  return db.transaction(async (tx) => {
+  const deleted = await db.transaction(async (tx) => {
     const deleted = await tx
       .delete(notes)
       .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
@@ -403,4 +495,12 @@ export async function deleteNoteForUser(
 
     return true;
   });
+
+  if (deleted) {
+    // Post-commit: false (not-found/foreign) wrote nothing and invalidates
+    // nothing.
+    await invalidateNoteKeys(userId, noteId);
+  }
+
+  return deleted;
 }

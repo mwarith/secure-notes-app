@@ -21,12 +21,13 @@ Maps PRD requirements to the tickets that implement them. Maintained incremental
 | §6 Autosave | Debounced saves, status indicator, retryable failures, session resilience | ENG-13, ENG-14, ENG-15 | Merged (PRs #12, #13, #14) |
 | §7 Note Version History | Creation boundaries (silence-based), history UI, restore (append-only) | ENG-21, ENG-22, ENG-23, ENG-24, ENG-25 | Merged (PRs #15–#19) |
 | §8 Audit Log | Auth + note + version + 2FA events; dot-named, no secrets in metadata | ENG-3, ENG-4, ENG-9/10/25, ENG-28/30/32 | Merged |
+| §9 Error Experience | Classification layer: four classes (user_input/auth/operational/unexpected), class-derived retryability, safe normalization, internal capture, compiler-checked ten-case map; feature wiring pending | ENG-33 | Merged (PR #32); wiring ENG-34/35 pending |
 | §15 Security | Rate limiting (login, registration, TOTP paths — fail-closed on code verification), ownership boundaries, secret encryption, replay protection | ENG-5, ENG-7–10, ENG-27, ENG-30 | Merged |
 | §17 Reliability | Bounded Valkey failures, durable session fallback, graceful page degradation | ENG-15 | Merged (PR #14) |
 | §10–§11 Logging & Metrics | Infra provisioned (ENG-1); JSON logger + counter seams (ENG-15) — pino swap pending (ENG-16) | ENG-1, ENG-15 | Merged; ENG-16 pending |
 | §13 Automated Testing | 245 tests (unit + integration) shipped per-ticket, red-green | per-ticket | Ongoing |
 
-Not yet started: §9 error experience (ENG-33–35), §10–§12 instrumentation details (ENG-16 pino swap, ENG-39 metrics endpoint, ENG-40 Grafana dashboards), §12 stress testing (ENG-41), §13 coverage sweep (ENG-42), §14 Playwright (ENG-43), docs pass (ENG-44), polish (ENG-45/46), demo dry run (ENG-51). Merged from the product-owner UX list: RTL support for note content (ENG-47, PR #28; covers note card, editor dialog, version history, and create-note dialog surfaces), the scrollable version history panel (ENG-48, PR #29), the register-page cross-link (ENG-49, PR #30), and create-note dismissal saving the note (ENG-50, PR #31).
+Not yet started: §9 error experience wiring (ENG-34–35), §10–§12 instrumentation details (ENG-16 pino swap, ENG-39 metrics endpoint, ENG-40 Grafana dashboards), §12 stress testing (ENG-41), §13 coverage sweep (ENG-42), §14 Playwright (ENG-43), docs pass (ENG-44), polish (ENG-45/46), demo dry run (ENG-51). Merged from the product-owner UX list: RTL support for note content (ENG-47, PR #28; covers note card, editor dialog, version history, and create-note dialog surfaces), the scrollable version history panel (ENG-48, PR #29), the register-page cross-link (ENG-49, PR #30), and create-note dismissal saving the note (ENG-50, PR #31).
 
 ## Known limitations
 

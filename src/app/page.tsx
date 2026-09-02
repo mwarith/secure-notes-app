@@ -4,10 +4,13 @@ import { Lightbulb, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { logoutAction } from "./(auth)/login/actions";
 import { getActiveSession, isRedirectError } from "@/lib/auth/active-session";
+import { AppError, reportError } from "@/lib/errors";
 import { listNotesForUser } from "@/lib/notes";
 import { CreateNoteDialog } from "./create-note-dialog";
 import { NoteCard } from "./note-card";
 import { NoteEditorDialog } from "./note-editor-dialog";
+
+const WORKSPACE_OUTAGE_MESSAGE = "Workspace temporarily unavailable.";
 
 export const metadata: Metadata = {
   title: "Secure Notes",
@@ -23,6 +26,10 @@ export default async function WorkspacePage() {
     if (isRedirectError(error)) {
       throw error;
     }
+    reportError(
+      new AppError({ class: "operational", userMessage: WORKSPACE_OUTAGE_MESSAGE }),
+      { message: WORKSPACE_OUTAGE_MESSAGE },
+    );
     return (
       <main className="flex min-h-svh flex-col items-center justify-center gap-2 p-4 text-center">
         <p className="font-semibold">Secure Notes is temporarily unavailable</p>

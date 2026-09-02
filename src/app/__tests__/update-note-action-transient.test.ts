@@ -201,4 +201,43 @@ describe("updateNoteAction transient failures (integration)", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("captures the transient failure as operational via the classification layer", async () => {
+    await seedSession();
+    const noteId = "00000000-0000-0000-0000-0000000000fd";
+    vi.mocked(updateNoteForUser).mockRejectedValueOnce(
+      new Error("connection refused"),
+    );
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.operational");
+
+      const state = await updateNoteAction(
+        { status: "idle" },
+        makeForm(noteId, "Retried title", "Retried content"),
+      );
+
+      expect(state).toEqual({
+        status: "error",
+        retryable: true,
+        message: "Couldn't save right now. Try again.",
+      });
+      expect(readCounter("errors.operational")).toBe(before + 1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("warn");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("operational");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });

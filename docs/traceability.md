@@ -29,7 +29,7 @@ Maps PRD requirements to the tickets that implement them. Maintained incremental
 | §13 Automated Testing | 276 unit/integration tests shipped per-ticket, red-green; pure-policy modules for branching logic | per-ticket | Ongoing |
 | §14 Browser Automation | Playwright suite (21 specs, twice-green): all §14 journeys + validation, recovery codes, disable-2FA, cross-user privacy, destructive-action failure; runs against the compose stack, no backdoors | ENG-43 | Merged (PR #35) |
 
-Not yet started: §10–§12 instrumentation details (ENG-16 pino swap, ENG-52 declarative log shipping), §13 coverage sweep (ENG-42), docs pass (ENG-44), polish (ENG-45/46), demo dry run (ENG-51). Merged from the product-owner UX list: RTL support for note content (ENG-47, PR #28; covers note card, editor dialog, version history, and create-note dialog surfaces), the scrollable version history panel (ENG-48, PR #29), the register-page cross-link (ENG-49, PR #30), and create-note dismissal saving the note (ENG-50, PR #31).
+Not yet started: §10–§12 instrumentation details (ENG-16 pino swap, ENG-52 declarative log shipping), §13 coverage sweep (ENG-42), polish (ENG-45/46), demo dry run (ENG-51). Merged from the product-owner UX list: RTL support for note content (ENG-47, PR #28; covers note card, editor dialog, version history, and create-note dialog surfaces), the scrollable version history panel (ENG-48, PR #29), the register-page cross-link (ENG-49, PR #30), and create-note dismissal saving the note (ENG-50, PR #31).
 
 ## Known limitations
 

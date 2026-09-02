@@ -50,3 +50,21 @@ _Avoid_: "audit log" for a single event — the log is the whole collection
 **Rate limit window**:
 A fixed wall-clock interval per key (IP+email for login, user id for code verification) during which attempts count against a threshold; the counter starts once and is never extended mid-window. Login and registration fail OPEN when the store is unreachable (the core journey stays available); code-verification limiters fail CLOSED (a brute-force guard must not vanish with its store).
 _Avoid_: throttle, cooldown, sliding window
+
+### Error handling
+
+**user_input**:
+A validation-grade failure caused by what the user submitted. Not retryable as-is — the user fixes the input.
+_Avoid_: invalid data, validation error, bad request, 400
+
+**auth**:
+An authentication or authorization boundary failure, including rate-limited attempts; waiting out the Rate limit window is the recovery. Not retryable.
+_Avoid_: login error, permission error, server error, 403
+
+**operational**:
+A temporary infrastructure failure — database, cache, timeout, or a temporarily unavailable service. Retryable: the interface should let the user retry without losing their work.
+_Avoid_: server error, outage, downtime, 500
+
+**unexpected**:
+A bug or unclassified failure. Its internal detail is captured for investigation while the user sees only safe messaging. Not retryable.
+_Avoid_: crash, exception, internal error, client error

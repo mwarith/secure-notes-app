@@ -70,4 +70,29 @@ describe("GET /api/metrics", () => {
     expect(body).not.toContain('class="operational"');
     expect(body).not.toContain("autosave_failures_total");
   });
+
+  it("exposes the notes cache hit/miss counters (ENG-36 catalog)", async () => {
+    const { incrementCounter } = await import("@/lib/metrics");
+    incrementCounter("notes_cache_hits_total", 4);
+    incrementCounter("notes_cache_misses_total", 2);
+
+    const body = await (await getMetricsResponse()).text();
+
+    expect(body).toContain("# HELP notes_cache_hits_total ");
+    expect(body).toContain("# TYPE notes_cache_hits_total counter");
+    expect(body).toContain("notes_cache_hits_total 4");
+    expect(body).toContain("# HELP notes_cache_misses_total ");
+    expect(body).toContain("# TYPE notes_cache_misses_total counter");
+    expect(body).toContain("notes_cache_misses_total 2");
+  });
+
+  it("keeps the notes cache counters sparse until the cache is wired (ENG-37)", async () => {
+    const { incrementCounter } = await import("@/lib/metrics");
+    incrementCounter("errors.unexpected");
+
+    const body = await (await getMetricsResponse()).text();
+
+    expect(body).not.toContain("notes_cache_hits_total");
+    expect(body).not.toContain("notes_cache_misses_total");
+  });
 });

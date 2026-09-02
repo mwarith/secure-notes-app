@@ -46,6 +46,16 @@ const AUTOSAVE_FAILURES_FAMILY: MetricFamily = {
   help: "Autosave flushes that failed and were surfaced to the editor for retry.",
 };
 
+const NOTES_CACHE_HITS_FAMILY: MetricFamily = {
+  name: "notes_cache_hits_total",
+  help: "Notes cache reads served from Valkey (ENG-36 helper; wired into the read path by ENG-37).",
+};
+
+const NOTES_CACHE_MISSES_FAMILY: MetricFamily = {
+  name: "notes_cache_misses_total",
+  help: "Notes cache reads that missed (absent, malformed, or Valkey unavailable).",
+};
+
 interface CatalogEntry {
   family: MetricFamily;
   seamName: string;
@@ -67,6 +77,14 @@ const CATALOG: CatalogEntry[] = [
   {
     family: AUTOSAVE_FAILURES_FAMILY,
     seamName: "autosave_failures_total",
+  },
+  {
+    family: NOTES_CACHE_HITS_FAMILY,
+    seamName: "notes_cache_hits_total",
+  },
+  {
+    family: NOTES_CACHE_MISSES_FAMILY,
+    seamName: "notes_cache_misses_total",
   },
 ];
 

@@ -84,6 +84,15 @@ export function RegisterForm() {
             {pending ? "Creating account..." : "Create account"}
           </Button>
         </form>
+        <p className="text-muted-foreground mt-4 text-center text-sm">
+          Already have an account?{" "}
+          <Link
+            href="/login"
+            className="text-foreground underline underline-offset-4"
+          >
+            Sign in
+          </Link>
+        </p>
       </CardContent>
     </Card>
   );

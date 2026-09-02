@@ -17,6 +17,7 @@ import { encryptTotpSecret } from "@/lib/auth/totp-crypto";
 import { generateTotpSecret, totpUri } from "@/lib/auth/totp";
 import { TOTP, URI } from "otpauth";
 import { verifyTotpChallengeAction } from "@/app/(auth)/login/2fa/actions";
+import { readCounter } from "@/lib/metrics";
 import {
   confirmTotpSetupAction,
   startTotpSetupAction,
@@ -47,6 +48,15 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
+
+vi.mock("@/lib/auth/session", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/auth/session")>();
+  return {
+    ...actual,
+    getSession: vi.fn(actual.getSession),
+    activateSession: vi.fn(actual.activateSession),
+  };
+});
 
 import { redirect } from "next/navigation";
 
@@ -497,6 +507,46 @@ describe("verifyTotpChallengeAction (integration)", () => {
       .from(sessions)
       .where(eq(sessions.tokenHash, hashSessionToken(token)));
     expect(row.pendingTwoFactor).toBe(true);
+  });
+
+  it("captures an unexpected failure and returns the safe error without leaking raw error text", async () => {
+    const { getSession } = await import("@/lib/auth/session");
+    await seedUser();
+    await seedPendingSession();
+    vi.mocked(getSession).mockRejectedValueOnce(
+      new Error("valkey cluster unavailable during challenge"),
+    );
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.unexpected");
+
+      const result = await verifyTotpChallengeAction(
+        prevState,
+        formData("123456"),
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Something went wrong. Please try again.",
+      });
+      expect(await db.select().from(auditEvents)).toHaveLength(0);
+      expect(readCounter("errors.unexpected")).toBe(before + 1);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(errorSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("error");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("unexpected");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

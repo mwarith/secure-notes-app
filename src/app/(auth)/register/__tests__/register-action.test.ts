@@ -7,6 +7,8 @@ import { registerAction } from "@/app/(auth)/register/actions";
 import { auditEvents, sessions, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
+import { registerUser } from "@/lib/auth/register";
+import { readCounter } from "@/lib/metrics";
 import {
   resolveTestDatabaseUrl,
   resolveTestValkeyUrl,
@@ -21,6 +23,14 @@ const { requestHeaders } = vi.hoisted(() => ({
 vi.mock("next/headers", () => ({
   headers: vi.fn(async () => requestHeaders.value),
 }));
+
+vi.mock("@/lib/auth/register", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/auth/register")>();
+  return {
+    ...actual,
+    registerUser: vi.fn(actual.registerUser),
+  };
+});
 
 const pool = new Pool({ connectionString: resolveTestDatabaseUrl() });
 const db = drizzle(pool);
@@ -115,5 +125,43 @@ describe("registerAction (integration)", () => {
     expect(
       await db.select().from(users).where(eq(users.email, "")),
     ).toHaveLength(0);
+  });
+
+  it("captures an unexpected failure and returns the safe message without leaking raw error text", async () => {
+    vi.mocked(registerUser).mockRejectedValueOnce(
+      new Error("relation users disappeared mid-registration"),
+    );
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.unexpected");
+
+      const state = await registerAction(
+        { status: "idle" },
+        makeForm("user@example.com", "correct horse battery staple"),
+      );
+
+      expect(state).toEqual({
+        status: "error",
+        message: "Something went wrong. Please try again.",
+      });
+      expect(await db.select().from(users)).toHaveLength(0);
+      expect(await db.select().from(auditEvents)).toHaveLength(0);
+      expect(readCounter("errors.unexpected")).toBe(before + 1);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(errorSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("error");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("unexpected");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

@@ -15,11 +15,18 @@ import { checkTotpConfirmLimit, resetTotpConfirmLimit } from "@/lib/rate-limit";
 import { valkey } from "@/lib/valkey";
 import { recordAuditEvent } from "@/lib/audit";
 import { log } from "@/lib/logger";
+import { AppError, reportError } from "@/lib/errors";
+import { isNextRedirect } from "@/lib/next-redirect";
 
 export type ChallengeState = { ok: true } | { ok: false; error: string };
 
 const TOO_MANY_ATTEMPTS_MESSAGE = "Too many attempts. Try again later.";
 const INVALID_CODE_MESSAGE = "That code didn't match. Try again.";
+const UNEXPECTED_ERROR_MESSAGE = "Something went wrong. Please try again.";
+
+function authError(userMessage: string): AppError {
+  return new AppError({ class: "auth", userMessage });
+}
 
 /**
  * RFC 6238 §5.2 replay protection: the absolute time-step of the last
@@ -62,6 +69,18 @@ export async function verifyTotpChallengeAction(
   _prevState: ChallengeState,
   formData: FormData,
 ): Promise<ChallengeState> {
+  try {
+    return await runChallenge(formData);
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    const { message } = reportError(error, {
+      message: UNEXPECTED_ERROR_MESSAGE,
+    });
+    return { ok: false, error: message };
+  }
+}
+
+async function runChallenge(formData: FormData): Promise<ChallengeState> {
   const cookieStore = await cookies();
   const session = await getSession(
     cookieStore.get(SESSION_COOKIE_NAME)?.value,
@@ -97,7 +116,7 @@ export async function verifyTotpChallengeAction(
     userId: session.userId,
   });
   if (gate && !gate.allowed) {
-    return { ok: false, error: TOO_MANY_ATTEMPTS_MESSAGE };
+    throw authError(TOO_MANY_ATTEMPTS_MESSAGE);
   }
 
   const code = formData.get("code");
@@ -128,7 +147,7 @@ export async function verifyTotpChallengeAction(
         action: "login.failed",
         metadata: { method: "password", outcome: "invalid_recovery_code" },
       });
-      return { ok: false, error: INVALID_CODE_MESSAGE };
+      throw authError(INVALID_CODE_MESSAGE);
     }
 
     await resetTotpConfirmLimit(valkey, { userId: session.userId });
@@ -147,7 +166,7 @@ export async function verifyTotpChallengeAction(
   }
 
   if (!user.totpSecretEncrypted) {
-    return { ok: false, error: INVALID_CODE_MESSAGE };
+    throw authError(INVALID_CODE_MESSAGE);
   }
 
   let secret: string;
@@ -177,7 +196,7 @@ export async function verifyTotpChallengeAction(
       action: "login.failed",
       metadata: { method: "password", outcome: "invalid_totp_code" },
     });
-    return { ok: false, error: INVALID_CODE_MESSAGE };
+    throw authError(INVALID_CODE_MESSAGE);
   }
 
   if (!valid) {
@@ -188,7 +207,7 @@ export async function verifyTotpChallengeAction(
       action: "login.failed",
       metadata: { method: "password", outcome: "invalid_totp_code" },
     });
-    return { ok: false, error: INVALID_CODE_MESSAGE };
+    throw authError(INVALID_CODE_MESSAGE);
   }
 
   await valkey.set(replayKey, String(timestep), "EX", TOTP_REPLAY_TTL_SECONDS);

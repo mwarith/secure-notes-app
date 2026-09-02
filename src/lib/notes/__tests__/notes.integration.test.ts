@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { auditEvents, noteVersions, notes, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
+import { delNotesCache, notesListKey, notesNoteKey } from "@/lib/cache";
 import {
   checkpointNoteVersionForUser,
   createNoteForUser,
@@ -157,6 +158,10 @@ describe("listNotesForUser (integration)", () => {
       .update(notes)
       .set({ title: "Older, touched", updatedAt: new Date() })
       .where(eq(notes.id, older.id));
+
+    // The write bypassed the lib, so the read-through cache is still warm;
+    // drop it to observe the fresh DB ordering.
+    await delNotesCache(notesListKey(userId));
 
     const after = await listNotesForUser(userId);
     expect(after.map((note) => note.id)).toEqual([older.id, newer.id]);
@@ -371,6 +376,9 @@ describe("updateNoteForUser (integration)", () => {
     });
 
     expect(result).toBeNull();
+    // The read-through cache is still warm from the owner's first read;
+    // drop it so this assertion observes the database, not the cache.
+    await delNotesCache(notesNoteKey(ownerId, noteId));
     expect(await getNoteForUser(ownerId, noteId)).toEqual(before);
     expect(await db.select().from(auditEvents)).toHaveLength(0);
   });
@@ -782,6 +790,9 @@ describe("restoreNoteVersionForUser (integration)", () => {
       await restoreNoteVersionForUser(attackerId, noteId, versionId),
     ).toBeNull();
 
+    // The read-through cache is still warm from the owner's first read;
+    // drop it so this assertion observes the database, not the cache.
+    await delNotesCache(notesNoteKey(ownerId, noteId));
     expect(await getNoteForUser(ownerId, noteId)).toEqual(before);
     expect(
       await db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)),

@@ -94,7 +94,7 @@ export function NoteHistory({
 
   return (
     <div className="space-y-3">
-      <ul className="space-y-1">
+      <ul className="max-h-64 space-y-1 overflow-y-auto">
         {history.versions.map((version) => (
           <li key={version.id}>
             <button

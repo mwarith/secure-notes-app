@@ -6,8 +6,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { auditEvents, sessions, users } from "@/db/schema";
 import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
-import { login } from "@/lib/auth/login";
+import { login, logout } from "@/lib/auth/login";
 import { getSession } from "@/lib/auth/session";
+import { readCounter } from "@/lib/metrics";
 import { loginAction, logoutAction } from "@/app/(auth)/login/actions";
 import { resolveTestDatabaseUrl, resolveTestValkeyUrl } from "../../../../../vitest.helpers";
 
@@ -30,6 +31,15 @@ vi.mock("next/headers", () => ({
 vi.mock("next/navigation", () => ({
   redirect: vi.fn(),
 }));
+
+vi.mock("@/lib/auth/login", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/auth/login")>();
+  return {
+    ...actual,
+    login: vi.fn(actual.login),
+    logout: vi.fn(actual.logout),
+  };
+});
 
 import { redirect } from "next/navigation";
 
@@ -168,5 +178,73 @@ describe("loginAction (integration)", () => {
     await logoutAction();
 
     expect(await db.select().from(auditEvents)).toHaveLength(0);
+  });
+
+  it("captures an unexpected login failure and returns the safe message without leaking raw error text", async () => {
+    await seedUser();
+    vi.mocked(login).mockRejectedValueOnce(
+      new Error("ECONNREFUSED 10.1.2.3:5432 auth database"),
+    );
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.unexpected");
+
+      const state = await loginAction(
+        { status: "idle" },
+        makeForm(EMAIL, PASSWORD),
+      );
+
+      expect(state).toEqual({
+        status: "error",
+        message: "Something went wrong. Please try again.",
+      });
+      expect(cookieStore.set).not.toHaveBeenCalled();
+      expect(await db.select().from(auditEvents)).toHaveLength(0);
+      expect(readCounter("errors.unexpected")).toBe(before + 1);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(errorSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("error");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("unexpected");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("completes logout when the server-side session teardown fails, capturing the operational failure", async () => {
+    vi.mocked(cookieStore.get).mockReturnValue(undefined as never);
+    vi.mocked(logout).mockRejectedValueOnce(
+      new Error("valkey connection lost during logout"),
+    );
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.operational");
+
+      await expect(logoutAction()).resolves.toBeUndefined();
+
+      expect(cookieStore.delete).toHaveBeenCalledWith("session");
+      expect(readCounter("errors.operational")).toBe(before + 1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+      };
+      expect(parsed.level).toBe("warn");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("operational");
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

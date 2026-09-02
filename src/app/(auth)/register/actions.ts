@@ -3,6 +3,7 @@
 import { db } from "@/db";
 import { recordAuditEvent } from "@/lib/audit";
 import { getClientIp } from "@/lib/client-ip";
+import { AppError, reportError } from "@/lib/errors";
 import {
   RATE_LIMITED_MESSAGE,
   checkRegisterRateLimit,
@@ -27,10 +28,9 @@ const ERROR_MESSAGES: Record<RegisterFailureReason, string> = {
     "Unable to create account with these details. If you already have an account, try signing in or resetting your password.",
 };
 
-export async function registerAction(
-  _prevState: RegisterFormState,
-  formData: FormData,
-): Promise<RegisterFormState> {
+const UNEXPECTED_ERROR_MESSAGE = "Something went wrong. Please try again.";
+
+async function runRegister(formData: FormData): Promise<RegisterFormState> {
   const ip = await getClientIp();
 
   const gate = await checkRegisterRateLimit(valkey, { ip });
@@ -42,7 +42,7 @@ export async function registerAction(
       action: "register.rate_limited",
       metadata: { method: "password" },
     });
-    return { status: "error", message: RATE_LIMITED_MESSAGE };
+    throw new AppError({ class: "auth", userMessage: RATE_LIMITED_MESSAGE });
   }
 
   const result = await registerUser({
@@ -61,5 +61,22 @@ export async function registerAction(
     await refundRegistrationRateLimit(valkey, { ip });
   }
 
-  return { status: "error", message: ERROR_MESSAGES[result.reason] };
+  throw new AppError({
+    class: "user_input",
+    userMessage: ERROR_MESSAGES[result.reason],
+  });
+}
+
+export async function registerAction(
+  _prevState: RegisterFormState,
+  formData: FormData,
+): Promise<RegisterFormState> {
+  try {
+    return await runRegister(formData);
+  } catch (error) {
+    const { message } = reportError(error, {
+      message: UNEXPECTED_ERROR_MESSAGE,
+    });
+    return { status: "error", message };
+  }
 }

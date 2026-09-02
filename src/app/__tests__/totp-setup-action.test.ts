@@ -16,6 +16,7 @@ import {
   startTotpSetupAction,
   type ConfirmTotpState,
 } from "@/app/settings/security/actions";
+import { readCounter } from "@/lib/metrics";
 import {
   resolveTestDatabaseUrl,
   resolveTestValkeyUrl,
@@ -40,6 +41,16 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
+
+vi.mock("@/lib/auth/active-session", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/auth/active-session")
+  >();
+  return {
+    ...actual,
+    getActiveSession: vi.fn(actual.getActiveSession),
+  };
+});
 
 import { redirect } from "next/navigation";
 
@@ -161,6 +172,42 @@ describe("startTotpSetupAction (integration)", () => {
 
     const token = currentTokenFromUri(result.uri);
     expect(verifyTotpCode(secret, token)).toBe(true);
+  });
+
+  it("captures an unexpected failure and returns the safe error without leaking raw error text", async () => {
+    const { getActiveSession } = await import("@/lib/auth/active-session");
+    await seedSession();
+    vi.mocked(getActiveSession).mockRejectedValueOnce(
+      new Error("primary database unreachable during setup"),
+    );
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const before = readCounter("errors.unexpected");
+
+      const result = await startTotpSetupAction();
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Something went wrong. Please try again.",
+      });
+      expect(await db.select().from(auditEvents)).toHaveLength(0);
+      expect(readCounter("errors.unexpected")).toBe(before + 1);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(errorSpy.mock.calls[0]?.[0] as string) as {
+        level: string;
+        event: string;
+        class: string;
+        detail?: string;
+      };
+      expect(parsed.level).toBe("error");
+      expect(parsed.event).toBe("error.captured");
+      expect(parsed.class).toBe("unexpected");
+      expect(parsed.detail).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

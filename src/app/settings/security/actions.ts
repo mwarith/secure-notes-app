@@ -23,6 +23,8 @@ import { checkTotpConfirmLimit, resetTotpConfirmLimit } from "@/lib/rate-limit";
 import { valkey } from "@/lib/valkey";
 import { recordAuditEvent } from "@/lib/audit";
 import { log } from "@/lib/logger";
+import { AppError, reportError, toActionError } from "@/lib/errors";
+import { isNextRedirect } from "@/lib/next-redirect";
 
 export type StartTotpSetupResult =
   | { ok: true; uri: string; qrDataUrl: string }
@@ -48,6 +50,29 @@ const NO_PENDING_SETUP_MESSAGE = "Start setup first.";
 const INVALID_CODE_MESSAGE = "That code didn't match. Try again.";
 const PASSWORD_MISMATCH_MESSAGE = "That password didn't match.";
 const ENABLE_FIRST_MESSAGE = "Enable two-factor authentication first.";
+const UNEXPECTED_ERROR_MESSAGE = "Something went wrong. Please try again.";
+
+function authError(userMessage: string): AppError {
+  return new AppError({ class: "auth", userMessage });
+}
+
+/**
+ * Classifies an expected disable-flow failure while preserving WHERE the
+ * settings UI shows it (password field, code field, or form). The message
+ * is produced via toActionError so the AppError stays the single source of
+ * the user-visible text.
+ */
+function fieldError(
+  field: "password" | "code" | "form",
+  error: AppError,
+): DisableTotpState {
+  return {
+    ok: false,
+    field,
+    error: toActionError(error, { message: UNEXPECTED_ERROR_MESSAGE })
+      .message,
+  };
+}
 
 /**
  * Two-factor setup actions (PRD §8). The plaintext secret exists only in
@@ -89,6 +114,18 @@ export async function disableTotpAction(
   _prevState: DisableTotpState,
   formData: FormData,
 ): Promise<DisableTotpState> {
+  try {
+    return await runDisable(formData);
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    const { message } = reportError(error, {
+      message: UNEXPECTED_ERROR_MESSAGE,
+    });
+    return { ok: false, field: "form", error: message };
+  }
+}
+
+async function runDisable(formData: FormData): Promise<DisableTotpState> {
   const session = await getActiveSession();
 
   const [user] = await db
@@ -107,20 +144,20 @@ export async function disableTotpAction(
   }
 
   if (!user.totpEnabled) {
-    return { ok: false, field: "form", error: NOT_ENABLED_MESSAGE };
+    return fieldError("form", authError(NOT_ENABLED_MESSAGE));
   }
 
   const gate = await checkTotpConfirmLimit(valkey, {
     userId: session.userId,
   });
   if (gate && !gate.allowed) {
-    return { ok: false, field: "form", error: TOO_MANY_ATTEMPTS_MESSAGE };
+    return fieldError("form", authError(TOO_MANY_ATTEMPTS_MESSAGE));
   }
 
   const password = formData.get("password");
   const passwordText = typeof password === "string" ? password : "";
   if (!(await verifyPassword(passwordText, user.passwordHash))) {
-    return { ok: false, field: "password", error: PASSWORD_MISMATCH_MESSAGE };
+    return fieldError("password", authError(PASSWORD_MISMATCH_MESSAGE));
   }
 
   const code = formData.get("code");
@@ -141,7 +178,7 @@ export async function disableTotpAction(
       .returning({ id: twoFactorRecoveryCodes.id });
 
     if (consumed.length === 0) {
-      return { ok: false, field: "code", error: INVALID_CODE_MESSAGE };
+      return fieldError("code", authError(INVALID_CODE_MESSAGE));
     }
 
     await recordAuditEvent(db, {
@@ -153,7 +190,7 @@ export async function disableTotpAction(
     });
   } else {
     if (!user.totpSecretEncrypted) {
-      return { ok: false, field: "code", error: INVALID_CODE_MESSAGE };
+      return fieldError("code", authError(INVALID_CODE_MESSAGE));
     }
 
     let secret: string;
@@ -161,11 +198,11 @@ export async function disableTotpAction(
       secret = decryptTotpSecret(user.totpSecretEncrypted);
     } catch {
       log("error", "2fa.disable_decrypt_failed", { userId: session.userId });
-      return { ok: false, field: "code", error: INVALID_CODE_MESSAGE };
+      return fieldError("code", authError(INVALID_CODE_MESSAGE));
     }
 
     if (!verifyTotpCodeDelta(secret, codeText).valid) {
-      return { ok: false, field: "code", error: INVALID_CODE_MESSAGE };
+      return fieldError("code", authError(INVALID_CODE_MESSAGE));
     }
   }
 
@@ -195,6 +232,18 @@ export async function regenerateRecoveryCodesAction(
   _prevState: RegenerateState,
   formData: FormData,
 ): Promise<RegenerateState> {
+  try {
+    return await runRegenerate(formData);
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    const { message } = reportError(error, {
+      message: UNEXPECTED_ERROR_MESSAGE,
+    });
+    return { ok: false, error: message };
+  }
+}
+
+async function runRegenerate(formData: FormData): Promise<RegenerateState> {
   const session = await getActiveSession();
 
   const [user] = await db
@@ -211,20 +260,20 @@ export async function regenerateRecoveryCodesAction(
   }
 
   if (!user.totpEnabled) {
-    return { ok: false, error: ENABLE_FIRST_MESSAGE };
+    throw authError(ENABLE_FIRST_MESSAGE);
   }
 
   const gate = await checkTotpConfirmLimit(valkey, {
     userId: session.userId,
   });
   if (gate && !gate.allowed) {
-    return { ok: false, error: TOO_MANY_ATTEMPTS_MESSAGE };
+    throw authError(TOO_MANY_ATTEMPTS_MESSAGE);
   }
 
   const password = formData.get("password");
   const passwordText = typeof password === "string" ? password : "";
   if (!(await verifyPassword(passwordText, user.passwordHash))) {
-    return { ok: false, error: PASSWORD_MISMATCH_MESSAGE };
+    throw authError(PASSWORD_MISMATCH_MESSAGE);
   }
 
   // Old codes become unusable the moment the new batch replaces them: the
@@ -259,6 +308,18 @@ export async function regenerateRecoveryCodesAction(
 }
 
 export async function startTotpSetupAction(): Promise<StartTotpSetupResult> {
+  try {
+    return await runStartSetup();
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    const { message } = reportError(error, {
+      message: UNEXPECTED_ERROR_MESSAGE,
+    });
+    return { ok: false, error: message };
+  }
+}
+
+async function runStartSetup(): Promise<StartTotpSetupResult> {
   const session = await getActiveSession();
 
   const [user] = await db
@@ -276,7 +337,7 @@ export async function startTotpSetupAction(): Promise<StartTotpSetupResult> {
   }
 
   if (user.totpEnabled) {
-    return { ok: false, error: ALREADY_ENABLED_MESSAGE };
+    throw authError(ALREADY_ENABLED_MESSAGE);
   }
 
   const secret = generateTotpSecret();
@@ -297,13 +358,25 @@ export async function confirmTotpSetupAction(
   _prevState: ConfirmTotpState,
   formData: FormData,
 ): Promise<ConfirmTotpState> {
+  try {
+    return await runConfirmSetup(formData);
+  } catch (error) {
+    if (isNextRedirect(error)) throw error;
+    const { message } = reportError(error, {
+      message: UNEXPECTED_ERROR_MESSAGE,
+    });
+    return { ok: false, error: message };
+  }
+}
+
+async function runConfirmSetup(formData: FormData): Promise<ConfirmTotpState> {
   const session = await getActiveSession();
 
   const gate = await checkTotpConfirmLimit(valkey, {
     userId: session.userId,
   });
   if (gate && !gate.allowed) {
-    return { ok: false, error: TOO_MANY_ATTEMPTS_MESSAGE };
+    throw authError(TOO_MANY_ATTEMPTS_MESSAGE);
   }
 
   const [user] = await db
@@ -320,11 +393,11 @@ export async function confirmTotpSetupAction(
   }
 
   if (user.totpEnabled) {
-    return { ok: false, error: ALREADY_ENABLED_MESSAGE };
+    throw authError(ALREADY_ENABLED_MESSAGE);
   }
 
   if (!user.totpSecretEncrypted) {
-    return { ok: false, error: NO_PENDING_SETUP_MESSAGE };
+    throw authError(NO_PENDING_SETUP_MESSAGE);
   }
 
   let secret: string;
@@ -332,14 +405,14 @@ export async function confirmTotpSetupAction(
     secret = decryptTotpSecret(user.totpSecretEncrypted);
   } catch {
     log("error", "2fa.confirm_decrypt_failed", { userId: session.userId });
-    return { ok: false, error: INVALID_CODE_MESSAGE };
+    throw authError(INVALID_CODE_MESSAGE);
   }
 
   const code = formData.get("code");
   const codeText = typeof code === "string" ? code : "";
 
   if (!verifyTotpCode(secret, codeText)) {
-    return { ok: false, error: INVALID_CODE_MESSAGE };
+    throw authError(INVALID_CODE_MESSAGE);
   }
 
   await db

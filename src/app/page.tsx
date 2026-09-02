@@ -12,6 +12,30 @@ import { NoteEditorDialog } from "./note-editor-dialog";
 
 const WORKSPACE_OUTAGE_MESSAGE = "Workspace temporarily unavailable.";
 
+/**
+ * The outage screen (PRD §9/§17): both the session lookup and the notes
+ * query can fail when Postgres is unreachable; neither failure may render
+ * as a 500. Each failure is captured as operational so /api/metrics sees it.
+ */
+function renderOutage() {
+  reportError(
+    new AppError({
+      class: "operational",
+      userMessage: WORKSPACE_OUTAGE_MESSAGE,
+    }),
+    { message: WORKSPACE_OUTAGE_MESSAGE },
+  );
+  return (
+    <main className="flex min-h-svh flex-col items-center justify-center gap-2 p-4 text-center">
+      <p className="font-semibold">Secure Notes is temporarily unavailable</p>
+      <p className="text-muted-foreground text-sm">
+        We couldn&apos;t reach our services. Your saved notes are safe — please try
+        again in a moment.
+      </p>
+    </main>
+  );
+}
+
 export const metadata: Metadata = {
   title: "Secure Notes",
 };
@@ -26,26 +50,22 @@ export default async function WorkspacePage() {
     if (isRedirectError(error)) {
       throw error;
     }
-    reportError(
-      new AppError({ class: "operational", userMessage: WORKSPACE_OUTAGE_MESSAGE }),
-      { message: WORKSPACE_OUTAGE_MESSAGE },
-    );
-    return (
-      <main className="flex min-h-svh flex-col items-center justify-center gap-2 p-4 text-center">
-        <p className="font-semibold">Secure Notes is temporarily unavailable</p>
-        <p className="text-muted-foreground text-sm">
-          We couldn&apos;t reach our services. Your saved notes are safe — please try
-          again in a moment.
-        </p>
-      </main>
-    );
+    return renderOutage();
   }
 
   if (!session) {
     redirect("/login");
   }
 
-  const notes = await listNotesForUser(session.userId);
+  let notes: Awaited<ReturnType<typeof listNotesForUser>>;
+  try {
+    notes = await listNotesForUser(session.userId);
+  } catch (error) {
+    if (isRedirectError(error)) {
+      throw error;
+    }
+    return renderOutage();
+  }
 
   return (
     <div className="flex min-h-svh flex-1 flex-col">

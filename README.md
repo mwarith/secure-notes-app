@@ -24,7 +24,7 @@ with Server Actions, PostgreSQL 18, Valkey, and a full observability stack.
   derived from the class and users never see internals (PRD §9).
 - **Observability** — `/api/metrics` Prometheus exposition, provisioned Grafana
   dashboards, and a repeatable Python stress workflow (PRD §10–§12).
-- **Test pyramid** — 276 unit/integration tests (Vitest) and 21 Playwright
+- **Test pyramid** — 324 unit/integration tests (Vitest) and 21 Playwright
   browser specs over the real compose stack (PRD §13–§14).
 
 ## Quick start
@@ -73,7 +73,7 @@ Service map:
 
 | Command | Expected result |
 | --- | --- |
-| `npm test` | 32 test files, **276 tests passed** |
+| `npm test` | 36 test files, **324 tests passed** |
 | `npm run test:e2e` | **21 specs passed** (starts/reuses the compose web; serial by design for rate-limit budget isolation) |
 | `npm run lint` | no findings, exit 0 |
 | `npx tsc --noEmit` | no type errors, exit 0 |

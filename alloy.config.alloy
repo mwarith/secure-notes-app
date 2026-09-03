@@ -1,0 +1,37 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+discovery.relabel "web" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    action        = "keep"
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "web"
+  }
+
+  rule {
+    action      = "replace"
+    target_label = "job"
+    replacement = "secure-notes-web"
+  }
+}
+
+loki.source.docker "web" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.web.output
+  forward_to = [loki.write.loki.receiver]
+}
+
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

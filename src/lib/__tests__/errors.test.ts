@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   AppError,
-  PRD9_CHECKLIST,
+  EXPECTED_ERROR_CASES,
   reportError,
   toActionError,
   type AppErrorClass,
-  type Prd9CaseId,
+  type ErrorCaseId,
 } from "@/lib/errors";
 import { readCounter } from "@/lib/metrics";
 import { captureLog } from "@/lib/__tests__/log-capture";
@@ -91,9 +91,9 @@ describe("toActionError", () => {
   });
 });
 
-describe("PRD9_CHECKLIST", () => {
+describe("EXPECTED_ERROR_CASES", () => {
   it("maps all ten error cases to their approved error classes", () => {
-    const approved: Record<Prd9CaseId, AppErrorClass> = {
+    const approved: Record<ErrorCaseId, AppErrorClass> = {
       "auth-fail": "auth",
       "twofa-fail": "auth",
       "unauthorized-action": "auth",
@@ -105,11 +105,11 @@ describe("PRD9_CHECKLIST", () => {
       "restore-fail": "operational",
       "destructive-action-fail": "operational",
     };
-    expect(Object.keys(PRD9_CHECKLIST).sort()).toEqual(
+    expect(Object.keys(EXPECTED_ERROR_CASES).sort()).toEqual(
       Object.keys(approved).sort(),
     );
-    for (const id of Object.keys(approved) as Prd9CaseId[]) {
-      expect(PRD9_CHECKLIST[id]).toBe(approved[id]);
+    for (const id of Object.keys(approved) as ErrorCaseId[]) {
+      expect(EXPECTED_ERROR_CASES[id]).toBe(approved[id]);
     }
   });
 });

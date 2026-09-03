@@ -75,39 +75,21 @@ function fieldError(
 }
 
 /**
- * Two-factor setup actions (PRD §8). The plaintext secret exists only in
- * memory inside these functions: it is stored encrypted via the ENG-27
- * at-rest encryption, is never logged, and is returned to the client once —
- * embedded in the otpauth:// URI of the start response (ENG-29 renders it
- * as the QR the user scans). Confirmation consumes the ENG-5-style fixed
- * window limiter BEFORE verification, so online guessing of the 6-digit
- * code is bounded to 5 tries per 15 minutes per user; success resets the
- * window and writes exactly one 2fa.enabled audit event with no secrets in
- * metadata. Confirmation also issues the batch of 8 one-time recovery
- * codes (PRD §5 "Recovery", ENG-31): only sha256 hashes are stored; the
- * plaintexts ride back in this single response, are shown once by the
- * client, and are never logged. Recovery login consumes them via the
- * ENG-31 challenge flow.
+ * Two-factor setup: the plaintext secret exists only in memory (stored
+ * encrypted, never logged, returned once inside the otpauth:// URI).
+ * Confirmation consumes the fixed-window limiter BEFORE verification
+ * (online guessing bounded to 5/15min per user), writes one 2fa.enabled
+ * audit event with no secrets, and issues 8 one-time recovery codes —
+ * only sha256 hashes stored, plaintexts shown once and never logged.
  */
 
 /**
- * Disabling and regenerating (ENG-32, PRD §8 "disable or reconfigure
- * after appropriate identity verification"): both actions demand the
- * account password first — the user is already signed in, so the password
- * is the anti-hijack step that keeps an stolen tab from silently tearing
- * down 2FA — then verify either a current TOTP code or consume one unused
- * recovery code (same atomic conditional UPDATE as the ENG-31 login
- * flow). The limiter runs BEFORE verification so a stolen session cannot
- * brute-force either factor; wrong-password and wrong-code attempts burn
- * the same budget and are never audited (a failed management attempt
- * leaks nothing the audit log needs, and the settings UI shows the
- * matching field error). Success tears down EVERYTHING the enable flow
- * created — enabled flag, encrypted secret (the encryption key is the
- * only key, so NULLing the column destroys the secret), every recovery
- * row — and writes a single 2fa.disabled audit event. Regeneration
- * replaces the whole batch atomically-ish (delete-then-insert in one
- * request; no concurrent login can consume a deleted row) and writes
- * 2fa.recovery_codes_regenerated. Codes and secrets are never logged.
+ * Disable/regenerate: both actions demand the account password (the
+ * anti-hijack step for a stolen tab), then verify a current TOTP code or
+ * consume one recovery code. The limiter runs before verification; wrong
+ * attempts burn the same budget and are not audited. Disable tears down
+ * everything the enable flow created in one audit event; regeneration
+ * replaces the whole batch atomically. Codes and secrets are never logged.
  */
 
 export async function disableTotpAction(

@@ -3,39 +3,19 @@ import { incrementCounter } from "@/lib/metrics";
 import { valkey } from "@/lib/valkey";
 
 /**
- * Notes cache helper (PRD §11 visibility; ENG-36). A thin, bounded layer
- * over the shared Valkey client that ENG-37 will wire into the notes read
- * path as read-through + invalidation. This module owns three policies so
- * the read path never has to:
- *
- * - Serialization: JSON with epoch-ms Date encoding ("__date__" wrapper).
- *   A naive JSON round-trip turns NoteSummary.updatedAt into a string,
- *   which breaks the workspace UI (rendering/formatting expects Date);
- *   values are revived on read so callers receive real Date instances.
- * - Bounded failure: every operation catches, logs one warn line through
- *   the frozen logger seam, and degrades (null / false) — the cache can
- *   never throw into the read path, mirroring the shared client's
- *   maxRetriesPerRequest posture (fail fast, degrade gracefully).
- * - Counters: notes_cache_hits_total / notes_cache_misses_total via the
- *   frozen incrementCounter seam, so ENG-37's read-through is visible in
- *   /api/metrics from day one (the counters read 0/sparse until wired).
- *
- * Keys live in the "notes:" namespace — disjoint from "session:" and the
- * rate limiters' "rl:" — and the naming helpers below are the single
- * source of key shapes for ENG-37's reuse.
+ * Bounded notes-cache layer over the shared Valkey client. Three policies:
+ * JSON serialization that preserves Dates (pre-walked to epoch-ms objects
+ * — a naive round-trip breaks the UI), bounded failure (every op logs one
+ * warn and degrades, never throwing into the read path), and hit/miss
+ * counters for the metrics exposition. Key helpers own the "notes:"
+ * namespace, disjoint from sessions and rate limiting.
  */
 
 const DATE_MS_FIELD = "__date__ms";
 /**
- * Serialization protocol for cached values. JSON.stringify invokes toJSON
- * on Dates before any replacer, so replacer-based wrappers are silently
- * re-serialized as ISO strings (found live in this ticket's red run).
- * Instead, values are pre-walked: every Date becomes a plain
- * { "__date__ms": <epoch-ms> } object, which survives stringify verbatim;
- * on read, the parse reviver turns any single-key object with that exact
- * field back into a Date. A user object that legitimately contains only
- * a __date__ms field is indistinguishable from a Date stand-in — acceptable
- * here because cached values are the app's own notes-shaped payloads.
+ * Dates are pre-walked to { __date__ms } before stringify (toJSON runs
+ * before replacers, so replacer wrappers would silently become ISO
+ * strings) and revived on read.
  */
 const WARN_EVENT = "cache.valkey_failed";
 
@@ -107,8 +87,8 @@ export async function getNotesCache<T>(key: string): Promise<T | null> {
       incrementCounter("notes_cache_hits_total");
       return value;
     } catch (error) {
-      // Poisoned payload: count it as a miss and remove the key so the
-      // next read goes through (ENG-37 will re-fill from Postgres).
+      // Poisoned payload: count a miss and remove the key so the next
+      // read refills from Postgres.
       warnBoundedFailure("get", error);
       incrementCounter("notes_cache_misses_total");
       try {

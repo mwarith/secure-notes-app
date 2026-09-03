@@ -4,52 +4,23 @@ import {
 } from "@/lib/metrics";
 
 /**
- * Prometheus text exposition of the counter seam (PRD §11). The seam
- * (src/lib/metrics.ts) is frozen and consumed as-is: readCounter per
- * catalog entry, no seam changes.
+ * Prometheus text exposition of the counter seam, hand-rolled (a counter
+ * library behind the frozen Map seam would only mirror values into a
+ * parallel registry). The seam is consumed as-is; a new seam counter needs
+ * one catalog line below.
  *
- * prom-client vs hand-rolled (deliberate): prom-client wants its own
- * Counter objects created up-front and updated through its API, so behind
- * a frozen plain Map<number> seam it would only mirror values into a
- * parallel registry on every scrape — an extra layer with no gain.
- * Hand-rolled exposition is ~40 lines, needs no dependency, and is
- * directly unit-testable; HELP/TYPE curation is explicit either way.
+ * Mapping: seam "errors.<class>" becomes family app_errors_total with
+ * label class="<class>"; already-compliant names pass through. Every
+ * catalog family is emitted EVERY scrape, including at 0 (non-sparse): the
+ * in-memory registry resets with the web process, and an absent series
+ * would read as a silent drop instead of a reset — continuity is what
+ * keeps rate()/increase() reset-correct. app_process_start_time_seconds
+ * makes restarts visible; each counter also carries a standard _created
+ * line (this Prometheus ignores them, but continuity + resets() suffice).
  *
- * Dot mapping (seam counter names use dots, Prometheus names may not):
- * - "errors.<class>"  -> family app_errors_total with label class="<class>"
- * - already-compliant names (autosave_failures_total) pass through as-is
- * A future "errors.<x>" seam counter needs one catalog line below.
- *
- * Non-sparse exposition (ENG-54, superseding the old "absent reads as
- * zero" sparse stance): every catalog family is emitted every scrape,
- * including at 0. Sparse exposition made a fresh process (web restart or
- * recreate) serve an EMPTY body: Prometheus saw the series go absent and
- * reappear at the reset value — a silent drop (drill finding F2, live in
- * the ENG-54 Phase 1 restart experiment). Absence is NOT unambiguous zero
- * once restarts exist: it breaks resets()/rate() continuity, and the
- * in-memory registry demonstrably resets with the process while
- * RestartCount stays 0 (docker tracks restart-policy restarts only).
- * Continuity is what keeps rate()/increase() reset-correct across
- * restarts, so counters are always present.
- *
- * Restart visibility (ENG-54): the body also carries
- * app_process_start_time_seconds (gauge, epoch seconds — restarts show as
- * a jump) and a Prometheus-standard _created line per counter sample
- * (family name minus _total, same labels, value = process start epoch).
- * Verified live on the compose Prometheus (v3.14.0, enable-feature=""):
- * _created series are ingested but rate()/increase() do not consume them
- * without the created-timestamp feature flag — the reset correction that
- * actually keeps rate()/increase() honest across restarts here is series
- * continuity (non-sparse exposition) plus the engine's decrease-based
- * reset correction. The _created lines ride along for engines (or future
- * flag flips) that do consume them; do not credit them on this engine.
- *
- * Auth stance: the body is aggregate counters only — no secrets, tokens,
- * session values, or user identifiers (the frozen seams forbid them). The
- * consumer is the compose-internal Prometheus scraper (prometheus.yml
- * targets web:3000, metrics_path /api/metrics); a production deployment
- * would restrict the route at the network or reverse-proxy layer rather
- * than in the application (PRD §11 asks for exposure, not public access).
+ * Auth stance: aggregate counters only — no secrets or user identifiers.
+ * Intended consumer is the compose-internal Prometheus scraper; a
+ * production deployment restricts the route at the network layer.
  */
 
 const CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";

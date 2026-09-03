@@ -2,53 +2,18 @@ import { createHash } from "node:crypto";
 import { isValidEmail, normalizeEmail } from "./auth/validation";
 
 /**
- * Valkey-backed fixed-window rate limiting for the authentication endpoints
- * (PRD §15 "repeated authentication abuse can be controlled").
+ * Valkey-backed fixed-window rate limiting for the auth endpoints.
  *
- * Design decisions (deliberate, documented trade-offs):
+ * Login: 5 failed attempts / 15 min per IP+email, reset on success.
+ * Registration: 5 attempts / hour per IP (IP-only so rotating emails cannot
+ * evade the bucket); rejected-by-validation attempts are refunded.
+ * TOTP confirmation: 5 / 15 min per user, FAIL-CLOSED — it is the only
+ * throttle on a 6-digit code; login and registration fail OPEN so a Valkey
+ * outage cannot block the core journey.
  *
- * - Thresholds: 5 failed login attempts per 15 minutes per IP+email, and 5
- *   registration attempts per hour per IP. A legitimate user who mistypes
- *   their password rarely needs more than 3 tries before recovering, so 5
- *   gives headroom while 5 tries/15min keeps online guessing pointless
- *   against Argon2id-hashed 12+ character passwords. Registration is keyed by
- *   IP only because an attacker rotating emails would trivially evade an
- *   email-scoped bucket; 5/hour is far above any human pattern.
- *
- * - Fixed window, not sliding: the counter is INCR'd and the TTL is set once
- *   when the key is first created (never refreshed), so the window is a
- *   fixed wall-clock slice. This costs two cheap commands instead of the
- *   sorted-set bookkeeping a sliding window needs. The known trade-offs are
- *   accepted: a burst spanning a window boundary can admit up to 2x the
- *   limit, and a perfectly paced attacker gets 5 guesses per window — both
- *   irrelevant at this rate against the password policy.
- *
- * - Fail-open on Valkey unavailability for BOTH login and registration
- *   (PRD §17 vs §15 resolution): PRD §4 lists account creation as step 1 of
- *   the core user journey, and §17 says supporting services must not become
- *   single points of failure for core functionality. Valkey is a supporting
- *   service, so a transient outage must not block login or registration.
- *   The cost is accepted: while Valkey is down there is no rate-limit
- *   protection on either endpoint. The degradation is logged loudly via
- *   console.error on every failure so operators can see rate limiting is
- *   disabled and mitigate manually during prolonged outages. Note that a
- *   production system facing targeted adversarial abuse might fail closed
- *   for registration specifically (spam rows are durable); for this
- *   project's scope and threat model, availability of the core
- *   account-creation journey wins.
- *
- * - Keys are SHA-256 hashes of "ip|email" (or "ip"), so raw emails and IPs
- *   never appear in Valkey keys — keeping with PRD §15's requirement that
- *   sensitive information stay out of logs/inspection surfaces.
- *
- * - Counter semantics per flow: login consumes (INCRs) BEFORE processing and
- *   resets (DELs) on success, so the counter holds failed attempts and a
- *   successful login always gives the user a clean slate. Registration also
- *   consumes before processing, but refunds (DECRs) when the submission was
- *   rejected by local validation (invalid email / weak password) so typo
- *   retries never burn the budget; only outcomes that reach the database
- *   (created or duplicate) keep their slot. Admission itself stays atomic:
- *   the INCR decides the limit before any DB work happens.
+ * Keys are SHA-256 hashes, so raw emails/IPs never appear in Valkey. The
+ * fixed window can admit up to 2x the limit across a boundary — an accepted
+ * trade-off at these rates. Fail-open degradations log loudly.
  */
 
 export interface RateLimitStore {
@@ -227,11 +192,7 @@ export async function checkTotpConfirmLimit(
       config,
     );
   } catch (error) {
-    // Fail CLOSED for the TOTP code limiter: it is the only throttle between
-    // an attacker and a 10^6-keyspace 6-digit code, so an unavailable store
-    // must block verification rather than wave it through. The login and
-    // registration limiters stay fail-open — availability of the core
-    // journey outranks their abuse control (documented above).
+    // Fail CLOSED: see the module doc — this limiter guards 6-digit codes.
     logFailClosed("totp confirmation", error);
     return {
       allowed: false,

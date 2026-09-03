@@ -1,12 +1,15 @@
 import { log } from "./logger";
 import { incrementCounter } from "./metrics";
 
+/** The four failure classes every user-facing error belongs to. */
 export type AppErrorClass =
   | "user_input"
   | "auth"
   | "operational"
   | "unexpected";
 
+/** Retryability is decided by the class alone: only transient
+ * infrastructure failures may be retried as-is. */
 const RETRYABLE_BY_CLASS: Readonly<Record<AppErrorClass, boolean>> = {
   user_input: false,
   auth: false,
@@ -15,13 +18,10 @@ const RETRYABLE_BY_CLASS: Readonly<Record<AppErrorClass, boolean>> = {
 };
 
 /**
- * A classified failure raised by feature code.
- *
- * `class` is one of the four PRD §9 error classes and is the single source
- * of truth: `retryable` is derived from it, with no per-instance override.
- * `userMessage` is the only text ever shown to the user. `detail` is
- * internal capture for investigation and must never reach the interface —
- * keep secrets, tokens, and passwords out of it.
+ * A classified failure raised by feature code. `class` drives retryability;
+ * `userMessage` is the only text ever shown to the user; `detail` is
+ * internal context for investigation and must never reach the interface or
+ * contain secrets.
  */
 export class AppError extends Error {
   readonly class: AppErrorClass;
@@ -47,16 +47,10 @@ export class AppError extends Error {
 }
 
 /**
- * Pure normalizer from a thrown/returned value to the shape the form-state
- * unions serve ({ status: "error"; message; retryable }). No logging, no
- * counters — an action that only needs safe messaging uses this.
- *
- * Rules:
- * - An AppError yields its userMessage and its class-derived retryability.
- * - Anything else — an unknown Error, a thrown string, null, a plain
- *   object — yields the fallback message with "unexpected" semantics
- *   (retryable: false). The normalizer never crashes on a non-Error value
- *   and never echoes raw error.message from unknown throwables.
+ * Normalizes any thrown value to the safe message/retryable shape the
+ * forms serve. AppErrors keep their message; anything else gets the
+ * fallback message with non-retryable semantics — unknown throwables are
+ * never echoed to the user.
  */
 export function toActionError(
   error: unknown,
@@ -69,21 +63,10 @@ export function toActionError(
 }
 
 /**
- * Same return shape as toActionError, plus internal capture for the two
- * classes that own no dedicated audit event:
- *
- * - "operational" logs one structured line at warn and increments
- *   errors.operational — a temporary infrastructure failure (a failed
- *   Autosave flush, a lost DB connection) is an operations concern.
- * - "unexpected" logs at error and increments errors.unexpected — a bug or
- *   unclassified failure must be captured internally while the user sees
- *   only the safe fallback message.
- *
- * "user_input" and "auth" return the shape WITHOUT logging or counting:
- * their call sites already own dedicated audit events (login.failed,
- * account.locked-style auth boundaries), and double-logging here would be
- * a defect. Waiting out a Rate limit window is the recovery for auth, not
- * a retry; user input is fixed by the user, not re-attempted as-is.
+ * Same shape as toActionError, plus internal capture for operational and
+ * unexpected failures (one structured log line + error counter each).
+ * user_input and auth failures are neither logged nor counted here — their
+ * call sites already audit them (login.failed and friends).
  */
 export function reportError(
   error: unknown,
@@ -104,7 +87,8 @@ export function reportError(
   return result;
 }
 
-export type Prd9CaseId =
+/** Every user-facing failure case the product must give clear feedback for. */
+export type ErrorCaseId =
   | "auth-fail"
   | "twofa-fail"
   | "unauthorized-action"
@@ -117,11 +101,10 @@ export type Prd9CaseId =
   | "destructive-action-fail";
 
 /**
- * The error class for each of PRD §9's ten clear-feedback cases. The Record
- * is keyed by Prd9CaseId, so a missing or extra case is a compile error,
- * not a runtime surprise.
+ * The failure class for each error case. Keyed by ErrorCaseId, so a
+ * missing or extra case is a compile error, not a runtime surprise.
  */
-export const PRD9_CHECKLIST: Readonly<Record<Prd9CaseId, AppErrorClass>> = {
+export const EXPECTED_ERROR_CASES: Readonly<Record<ErrorCaseId, AppErrorClass>> = {
   "auth-fail": "auth",
   "twofa-fail": "auth",
   "unauthorized-action": "auth",

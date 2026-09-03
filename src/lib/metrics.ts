@@ -1,31 +1,18 @@
 /**
- * Process-wide counter registry. Next.js compiles route handlers/actions
- * and pages into separate server bundles, and module-level state is
- * bundle-local — an in-memory Map here would give each bundle its own
- * counters, making /api/metrics blind to increments from actions and
- * pages (found live in ENG-39). Anchoring on globalThis (the standard
- * Next.js singleton pattern, like the Prisma-client dedup) makes the Map
- * one process-wide instance regardless of bundle.
+ * Process-wide counter registry, anchored on globalThis: Next.js compiles
+ * each bundle separately and module state is bundle-local, so an unanchored
+ * Map would give /api/metrics blind spots. The registry lives and dies with
+ * the process — the epoch below is what makes that restart visible.
  */
 const counters = ((globalThis as { __appMetricsCounters?: Map<string, number> })
   .__appMetricsCounters ??= new Map<string, number>());
 
-/**
- * Process-start epoch (ENG-54), anchored on globalThis beside the Map so
- * module re-instantiations (one per bundle) share it: every counter in this
- * registry is born with the process, which is what /api/metrics exposes as
- * app_process_start_time_seconds and the per-counter _created lines. The
- * registry resets with the process — that restart is the thing this value
- * makes visible.
- */
+/** Process-start epoch, shared across bundles via globalThis. */
 const processStartedAtMs = ((globalThis as {
   __appMetricsCountersStartedAt?: number;
 }).__appMetricsCountersStartedAt ??= Date.now());
 
-/**
- * In-memory counter seam for observability. ENG-30 wires this to Prometheus
- * via /api/metrics — call sites must not change.
- */
+/** In-memory counter seam for observability; call sites must not change. */
 export function incrementCounter(name: string, by = 1): void {
   counters.set(name, (counters.get(name) ?? 0) + by);
 }
@@ -34,7 +21,7 @@ export function readCounter(name: string): number {
   return counters.get(name) ?? 0;
 }
 
-/** Process-start epoch in milliseconds (ENG-54 restart-aware exposition). */
+/** Process-start epoch in milliseconds. */
 export function processStartedAtEpochMs(): number {
   return processStartedAtMs;
 }

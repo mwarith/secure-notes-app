@@ -206,7 +206,7 @@ async function runRestore(
  * No revalidatePath: version rows are not rendered on the workspace grid.
  * A failed checkpoint reports "not created" after capture — the client's
  * swallow points stay UI-silent on purpose (a missed routine snapshot must
- * never nag), the capture here is the observability.
+ * never nag); the capture here is the observability.
  */
 export async function checkpointNoteVersionAction(
   noteId: unknown,

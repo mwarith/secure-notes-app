@@ -10,24 +10,17 @@ const CODE_CHARACTERS = GROUP_LENGTH * 2;
 const ALPHABET = "abcdefghjklmnpqrstuvwxyz234567";
 
 /**
- * Server-only helpers for two-factor recovery codes (PRD §5 "Recovery",
- * §8). Each code is drawn from 10 random bytes (80 bits) via base32-style
- * 5-bit groupings over an unambiguous alphabet, formatted "xxxxx-xxxxx".
- * Codes are stored ONLY as hashes and are returned to the client exactly
- * once at 2FA activation (ENG-31); they are never logged.
+ * Server-only helpers for two-factor recovery codes. Each code is 10 random
+ * bytes (~49 bits) over an unambiguous base32 alphabet, formatted
+ * "xxxxx-xxxxx", stored ONLY as hashes, shown to the user exactly once at
+ * 2FA activation, never logged.
  */
 
 /**
- * Hashes a recovery code for storage/lookup: sha256 hex of the trimmed,
- * lowercased code. Argon2id (used for passwords in ENG-3) is deliberately
- * NOT used here: password hashing exists to make low-entropy human-chosen
- * secrets expensive to brute-force offline. A recovery code is 10 uniform
- * random characters (~49 bits over the 30-char alphabet) — offline
- * cracking is already infeasible, and the database is only reachable
- * behind the Argon2id-hashed password. sha256 gives a deterministic,
- * indexable hash (the login consume query matches on equality) with no
- * key-management or parameter-tuning surface, which is the right
- * trade-off for high-entropy random secrets.
+ * sha256 of the trimmed, lowercased code. sha256 (not Argon2id) is
+ * deliberate: the code is high-entropy random, so offline cracking is
+ * already infeasible, and determinism keeps the login consume query a
+ * simple indexed equality match.
  */
 export function hashRecoveryCode(code: string): string {
   return createHash("sha256").update(code.trim().toLowerCase()).digest("hex");

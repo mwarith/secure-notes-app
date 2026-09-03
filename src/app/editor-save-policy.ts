@@ -7,25 +7,13 @@ export type EditorFields = { title: string; content: string };
 /**
  * Pure decision core for the note editor's save triggers.
  *
- * Rules:
- * - pending → "ignore": one save in flight at a time; a close attempt during
- *   a flight must never unmount the form over the running action.
- * - "close": with a shown error, unchanged since the failed attempt (or no
- *   outstanding snapshot at all) → "abandon", so a failed save can never
- *   trap the dialog in a resubmit loop; typed more since the failure →
- *   "submit" as a retry, so keystrokes are never silently discarded.
- *   Otherwise dirty against lastSaved → "submit", clean → "close".
- * - "debounce"/"blur": dirty → "submit", clean → "ignore". The save status
- *   is deliberately not consulted for these triggers.
- * - "retry": explicit user retry after a shown failure → always "submit"
- *   when not pending; bypasses the unchanged-since-failure and dirty checks
- *   because the user, not a timer, is asking for the attempt.
- *
- * WHY the dirty checks live here: updateNoteForUser stores values verbatim
- * and treats an identical-value write as a real write (updatedAt bump plus a
- * note.updated audit event); its honest no-op only applies when there are no
- * applicable string fields at all (pinned §3 decision from ENG-9). Avoiding
- * meaningless saves is therefore the client's job.
+ * One save in flight at a time ("pending" ignores new triggers). Close on a
+ * shown, unchanged failure abandons (a failed save can never trap the
+ * dialog); typing since the failure makes close a retry. Debounce/blur
+ * submit only when dirty. Explicit retry always submits. Dirty checks live
+ * here because the server treats an identical-value write as a real write
+ * (updatedAt bump + audit), so avoiding meaningless saves is the client's
+ * job.
  */
 export function resolveEditorSave(input: {
   trigger: SaveTrigger;

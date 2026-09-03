@@ -29,12 +29,10 @@ function authError(userMessage: string): AppError {
 }
 
 /**
- * RFC 6238 §5.2 replay protection: the absolute time-step of the last
- * successfully validated code is stored per user (sha256 of the id, matching
- * the rate-limiter key convention) with a 90-second TTL — three 30-second
- * windows, the full life of any code the ±1 window could still accept. A
- * verification whose time-step is not strictly newer than the stored one is
- * rejected as a replay, so a code can never authenticate twice.
+ * RFC 6238 §5.2 replay protection: the time-step of the last accepted code
+ * is stored per user with a 90-second TTL (the full life of any code the
+ * ±1 window could still accept). A code can therefore never authenticate
+ * twice.
  */
 const TOTP_REPLAY_TTL_SECONDS = 90;
 
@@ -43,26 +41,14 @@ function totpReplayKey(userId: string): string {
 }
 
 /**
- * The second step of a 2FA login (PRD §8). Only a session that is still
- * pending two-factor verification may confirm; everything else is bounced.
- * Two challenge modes share one flow (ENG-31): "totp" (default) verifies a
- * 6-digit authenticator code, "recovery" consumes one of the one-time
- * codes issued at activation — the input is normalized (trim, lowercase)
- * and hashed, then a single conditional UPDATE
- * (…WHERE user_id = … AND code_hash = … AND used_at IS NULL RETURNING id)
- * atomically marks the code used, so two concurrent logins can never spend
- * the same code. Both modes consume the userId-keyed TOTP limiter (5 per
- * 15 minutes, fail closed) rather than the IP-keyed login limiter — the
- * session's user id is unspoofable, so a directly exposed deployment
- * cannot rotate fresh attempt budgets by forging X-Forwarded-For, and
- * recovery codes are exactly as brute-forceable as TOTP codes, so the
- * same budget applies. A wrong, replayed, or already-used code is audited
- * as login.failed with outcome "invalid_totp_code" or
- * "invalid_recovery_code" — no secrets or codes ever reach the audit
- * record, and the neutral error is identical in both modes. On success
- * the limiter is reset, the pending flag is cleared in both session
- * stores (activateSession), a mode-specific audit event is recorded, and
- * the user is sent to the workspace.
+ * Second step of a 2FA login: only a still-pending session may confirm.
+ * Two modes share one flow — "totp" verifies a 6-digit code, "recovery"
+ * atomically consumes one single-use code (conditional UPDATE, so
+ * concurrent logins cannot spend it twice). Both use the userId-keyed
+ * limiter (fail closed) — the user id is unspoofable and recovery codes
+ * are as brute-forceable as TOTP codes. Wrong/replayed codes audit as
+ * login.failed with a neutral, identical error; success resets the
+ * limiter, activates the session in both stores, and audits the mode.
  */
 
 export async function verifyTotpChallengeAction(

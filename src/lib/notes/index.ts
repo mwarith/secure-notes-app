@@ -11,63 +11,20 @@ import {
 } from "@/lib/cache";
 
 /**
- * Ownership-scoped Note reads (PRD §6, §15; CONTEXT.md "Ownership-scoped
- * query").
+ * Ownership-scoped note storage. Every query filters by the caller's user id
+ * in the same WHERE clause, so knowing a note id never grants access —
+ * foreign and nonexistent reads are indistinguishable (null), and malformed
+ * ids are rejected before the database is contacted.
  *
- * Every query filters by the session user's id in the same WHERE clause that
- * selects the note, so knowing a note id alone never grants access: a note
- * belonging to another user and a nonexistent note id are indistinguishable —
- * both return null, and malformed UUIDs are rejected before the database sees
- * them. There is deliberately no way to fetch a note by id without a user id,
- * so the scope cannot be bypassed by a forgotten permission check.
- *
- * createNoteForUser follows the same ownership discipline on the write side:
- * the user id is an explicit parameter (never derived from a session inside
- * this module), and the insert plus its note.created audit event share one
- * transaction, so a note never exists without its audit record. The same
- * transaction also snapshots the creation state — the stored trimmed title
- * and verbatim content — as the note's first Note version, so the creation
- * state is version #1 (PRD §7) and every later update snapshots against
- * that baseline under the version boundary rules. Unlike the read
- * functions, a failed create is ordinary validation rather than the
- * access-denial boundary, so it returns a discriminated union with the
- * specific reason instead of null.
- *
- * Read-through cache (ENG-37, over the ENG-36 helper): the two hot reads —
- * listNotesForUser and getNoteForUser — consult Valkey first via
- * user-specific keys (notes:list:{userId}, notes:note:{userId}:{noteId}),
- * so a cached hit can never leak another user's notes and a foreign or
- * not-found read is indistinguishable from a cache miss. On a miss the
- * ownership-scoped query runs exactly as before and the result is stored
- * with NOTES_CACHE_TTL_SECONDS; an empty list is a value and is cached,
- * while a null note read (not-found/foreign) is NEVER cached. Malformed-id
- * early returns stay ahead of any cache or database contact. Writes never
- * populate the cache (no write-through); only reads refill after a miss.
- *
- * Invalidation is post-commit: after a successful write transaction
- * resolves, the affected keys are deleted (create → list key; a new note's
- * note key cannot exist yet because null is never cached; update, delete,
- * and restore → list + note keys). Failed writes (null/false returns)
- * wrote nothing and invalidate nothing; the no-op update path returns
- * through the cached read and is not a write. delNotesCache is bounded —
- * a failed invalidation logs one warn and degrades, never breaking the
- * write's own success — and the TTL bounds staleness to
- * NOTES_CACHE_TTL_SECONDS when invalidation could not run (e.g. Valkey
- * down at write time). Cached hits revive Date fields as real Dates, so a
- * hit equals the DB row it stands for.
- *
- * Deliberately NOT cached: listNoteVersionsForUser (version history stays
- * DB-only) and checkpointNoteVersionForUser (it writes a version, never
- * note state, so there is nothing to invalidate).
+ * The two hot reads go through a per-user read-through cache: hits can never
+ * leak another user's notes, null is never cached, an empty list is cached,
+ * and writes never populate the cache. Invalidation happens after the write
+ * commits (failed writes invalidate nothing); the TTL only bounds staleness
+ * for the window where invalidation itself failed. Writes and their audit
+ * events share one transaction. Version history and checkpoints stay
+ * DB-only — there is nothing to invalidate.
  */
 export const NOTES_CACHE_TTL_SECONDS = 60;
-
-/**
- * The cache key for a note is invalidated after every successful write to
- * that note, so the TTL is only a staleness bound for the window where
- * invalidation itself failed (e.g. Valkey was down at write time); the
- * next successful write's invalidation or the TTL expiry ends it.
- */
 
 async function invalidateNoteKeys(userId: string, noteId: string): Promise<void> {
   await Promise.all([
@@ -153,13 +110,7 @@ export async function listNotesForUser(userId: string): Promise<NoteSummary[]> {
   return summaries;
 }
 
-/**
- * Lists a Note's versions through the same ownership-scoped boundary as the
- * reads: a single join filtered by both the note id and the session user's
- * id, newest first (PRD §7). An empty list means the note has no versions or
- * is not the caller's — denied and no-versions are indistinguishable, the
- * list convention. Malformed ids are rejected before the database sees them.
- */
+/** Lists an owned note's versions, newest first; empty also covers denied. */
 export async function listNoteVersionsForUser(
   userId: string,
   noteId: string,
@@ -183,21 +134,10 @@ export async function listNoteVersionsForUser(
 }
 
 /**
- * Restores an owned note to one of its versions through the same
- * ownership-scoped boundary as the reads: the version is fetched via a
- * single join filtered by the version id, the note id, and the user id, so
- * a foreign note, a foreign version, and a nonexistent version are all
- * indistinguishable — null. Malformed ids are rejected before the database
- * sees them.
- *
- * The note's title and content are replaced by the version's stored state,
- * and the restored state is appended as a NEW Note version in the same
- * transaction: history is append-only (PRD §7) — never rewritten or
- * deleted — so creation is unconditional and the dedupe/threshold boundary
- * rules deliberately do not apply here. One user action produces exactly
- * one audit event, note.version_restored, with the restored version's id
- * in metadata for lineage; no note.updated event is written. Restore,
- * version append, and audit commit or roll back together.
+ * Restores an owned note to a version's stored state. History is
+ * append-only: the restored state becomes a NEW version in the same
+ * transaction, and one audit event (note.version_restored) records the
+ * lineage. Denied, foreign, and nonexistent are all null.
  */
 export async function restoreNoteVersionForUser(
   userId: string,
@@ -394,19 +334,10 @@ export async function updateNoteForUser(
 }
 
 /**
- * Captures a Note version of an owned note's current state. The trigger is
- * client-driven — the user has been silent for a while, or an editing
- * session just ended — so the server's only guard is the dedupe: the
- * snapshot is written only when the note's current title/content differ
- * exactly from the most recent version (or no version exists, which the
- * creation baseline makes rare). There is deliberately no throttle or
- * spacing rule — the client's silence timer is the rate limiter — and the
- * version history captures the states the user actually stopped on.
- *
- * Routine snapshots write no audit event (restoration is ENG-25's
- * note.version_restored). The ownership-scoped read makes denied and
- * nonexistent notes indistinguishable — null, exactly as getNoteForUser
- * would return; malformed ids are rejected before the database sees them.
+ * Captures an owned note's current state as a version, triggered when the
+ * user pauses editing or ends a session. The only server-side guard is the
+ * dedupe: a version is written only when the state differs from the most
+ * recent one. Routine snapshots write no audit event.
  */
 export async function checkpointNoteVersionForUser(
   userId: string,
@@ -452,20 +383,9 @@ export async function checkpointNoteVersionForUser(
 }
 
 /**
- * Deletes an owned note through the same authorization boundary as the
- * reads and updates: a single DELETE filtered by both note id and user id.
- * Zero rows means not-found and not-yours are indistinguishable — both
- * return false, and no existence probe ever runs. Malformed ids return
- * false before the database is queried.
- *
- * The boolean return is deliberate: the caller never needs the deleted
- * content (reads return Note | null, create returns a discriminated union,
- * delete returns boolean). Note versions cascade through the
- * note_versions foreign key (onDelete: cascade) — there is no manual
- * version cleanup. The note.deleted audit event is written in the same
- * transaction as the DELETE, so a delete never lands without its audit
- * record; audit_events.resourceId has no foreign key, so the record
- * remains queryable after the note and its versions are gone.
+ * Deletes an owned note (versions cascade via foreign key). Zero rows means
+ * not-found and not-yours are indistinguishable — false. The note.deleted
+ * audit event commits with the delete; the audit row survives the note.
  */
 export async function deleteNoteForUser(
   userId: string,

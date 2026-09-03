@@ -125,7 +125,7 @@ src/app/            routes, Server Actions, and client policy hooks
   (auth)/           register, login, 2FA challenge pages + actions
 src/lib/            seams and pure logic (no framework types)
   auth/             password, session, register, login, totp, recovery codes
-  logger.ts         JSON-line logger seam (pino swap pending, ENG-16)
+  logger.ts         JSON-line logger seam (pino-backed, ENG-16)
   metrics.ts        counter seam; process-wide registry (ENG-39)
   errors.ts         AppError + the four error classes (PRD §9)
   rate-limit.ts     fixed-window limiters, fail-open/closed policy
@@ -144,7 +144,8 @@ The app is organized around small, deeply documented modules that hide policy
 behind stable entry points:
 
 - **`src/lib/logger.ts`** — one JSON line per entry, `{ ts, level, event, … }`;
-  call sites are frozen so the pino swap (ENG-16) cannot ripple.
+  pino-backed (ENG-16) with mechanical secret redaction; call sites are frozen
+  so the backing cannot ripple.
 - **`src/lib/metrics.ts` + `src/app/api/metrics/route.ts`** — a process-wide
   counter registry; the route exposes `app_errors_total` (by class) and
   `autosave_failures_total` in Prometheus text format. The exposition is

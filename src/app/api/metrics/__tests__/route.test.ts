@@ -30,14 +30,23 @@ describe("GET /api/metrics", () => {
     return GET();
   }
 
-  it("returns a valid empty exposition without throwing on an empty counter map", async () => {
-    const response = await getMetricsResponse();
+  it("exposes the process start gauge and every catalog family even at zero (ENG-54, non-sparse)", async () => {
+    const body = await (await getMetricsResponse()).text();
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe(
-      "text/plain; version=0.0.4; charset=utf-8",
-    );
-    expect(await response.text()).toBe("");
+    const startMatch = body.match(/^app_process_start_time_seconds (\d+)$/m);
+    expect(startMatch).not.toBeNull();
+    const startedAtSeconds = Number(startMatch?.[1]);
+    expect(startedAtSeconds).toBeGreaterThan(0);
+    expect(startedAtSeconds).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+
+    expect(body).toContain("# TYPE app_process_start_time_seconds gauge");
+    expect(body).toContain("# TYPE app_errors_total counter");
+    expect(body).toContain('app_errors_total{class="operational"} 0');
+    expect(body).toContain('app_errors_total{class="unexpected"} 0');
+    expect(body).toContain("autosave_failures_total 0");
+    expect(body).toContain("notes_cache_hits_total 0");
+    expect(body).toContain("notes_cache_misses_total 0");
+    expect(body.endsWith("\n")).toBe(true);
   });
 
   it("exposes incremented counters with HELP/TYPE and the documented dot mapping", async () => {
@@ -60,15 +69,39 @@ describe("GET /api/metrics", () => {
     expect(body.endsWith("\n")).toBe(true);
   });
 
-  it("omits counters that were never incremented (sparse exposition)", async () => {
+  it("exposes zero-valued counters alongside incremented ones (non-sparse, ENG-54)", async () => {
     const { incrementCounter } = await import("@/lib/metrics");
     incrementCounter("errors.unexpected");
 
     const body = await (await getMetricsResponse()).text();
 
     expect(body).toContain('app_errors_total{class="unexpected"} 1');
-    expect(body).not.toContain('class="operational"');
-    expect(body).not.toContain("autosave_failures_total");
+    expect(body).toContain('app_errors_total{class="operational"} 0');
+    expect(body).toContain("autosave_failures_total 0");
+    expect(body).toContain("notes_cache_hits_total 0");
+    expect(body).toContain("notes_cache_misses_total 0");
+  });
+
+  it("emits _created lines per counter sample with the same labels and the process start epoch (ENG-54)", async () => {
+    const { incrementCounter } = await import("@/lib/metrics");
+    incrementCounter("errors.unexpected", 3);
+    incrementCounter("notes_cache_hits_total", 4);
+
+    const body = await (await getMetricsResponse()).text();
+
+    const startMatch = body.match(/^app_process_start_time_seconds (\d+)$/m);
+    expect(startMatch).not.toBeNull();
+    const startedAtSeconds = startMatch?.[1];
+    expect(body).toContain(
+      `app_errors_created{class="unexpected"} ${startedAtSeconds}`,
+    );
+    expect(body).toContain(
+      `app_errors_created{class="operational"} ${startedAtSeconds}`,
+    );
+    expect(body).toContain(`autosave_failures_created ${startedAtSeconds}`);
+    expect(body).toContain(`notes_cache_hits_created ${startedAtSeconds}`);
+    expect(body).toContain(`notes_cache_misses_created ${startedAtSeconds}`);
+    expect(body).not.toContain("_total_created");
   });
 
   it("exposes the notes cache hit/miss counters (ENG-36 catalog)", async () => {
@@ -86,13 +119,15 @@ describe("GET /api/metrics", () => {
     expect(body).toContain("notes_cache_misses_total 2");
   });
 
-  it("keeps the notes cache counters sparse until the cache is wired (ENG-37)", async () => {
+  it("keeps the exposition non-sparse after increments (notes cache families stay present, ENG-54)", async () => {
     const { incrementCounter } = await import("@/lib/metrics");
     incrementCounter("errors.unexpected");
 
     const body = await (await getMetricsResponse()).text();
 
-    expect(body).not.toContain("notes_cache_hits_total");
-    expect(body).not.toContain("notes_cache_misses_total");
+    expect(body).toContain("notes_cache_hits_total 0");
+    expect(body).toContain("notes_cache_misses_total 0");
+    expect(body).toContain("notes_cache_hits_created");
+    expect(body).toContain("notes_cache_misses_created");
   });
 });

@@ -148,3 +148,12 @@ has no `count_resets` function (it is a parse error) — use `resets()`, e.g.
   climbing, hits stalled, ratio dipping; recovery restored it).
 - Journeys near-instant during the outage (ENG-53 holding); zero
   `valkey_failed` warns post-recovery. This closes ENG-54's live AC.
+
+### 2026-09-03 (post-ENG-52, PR #46) — log-shipping drill
+
+- Outage blip with the Alloy sidecar live: the browser journey's warn lines
+  appeared in Loki under `job="secure-notes-web"` within seconds, byte-intact
+  pino JSON, and the `| json` pipeline extracts event/level/operation
+  (verified via the Loki API with the exact panel query). The Grafana Loki
+  panels render real data for the first time — drill finding F3 is closed.
+- Valkey recovered (PONG); zero `valkey_failed` warns post-recovery.

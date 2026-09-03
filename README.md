@@ -64,7 +64,8 @@ Service map:
 | web        | http://localhost:3000           | the app                                |
 | Grafana    | http://localhost:3001           | `admin` / `admin` (documented local default) |
 | Prometheus | http://localhost:9090           | scrapes `web:3000/api/metrics` every 15s |
-| Loki       | http://localhost:3100           | receives no logs yet — see Known trade-offs |
+| Loki       | http://localhost:3100           | receives web stdout via the Alloy sidecar (`job="secure-notes-web"`) |
+| alloy      | —                               | ships web stdout to Loki (ENG-52)      |
 | postgres   | localhost:5432                  | `notes_user` / `notes_pass`            |
 | valkey     | localhost:6379                  |                                        |
 
@@ -232,11 +233,10 @@ deltas are documented in `docs/database-schema.md`.
 ## Known trade-offs
 
 The running list lives in **`docs/traceability.md` → Known limitations**.
-Highlights: Loki receives no logs yet (log shipping is ENG-52; the two Loki
-panels render empty with self-describing text); session *creation* depends on
-Valkey even though session *reads* fall back to Postgres (ENG-X); client-IP
-detection trusts proxy headers and is documented as demo-scale-only
-(`src/lib/client-ip.ts`).
+Highlights: session *creation* depends on Valkey even though session *reads*
+fall back to Postgres (ENG-X); client-IP detection trusts proxy headers and is
+documented as demo-scale-only (`src/lib/client-ip.ts`); log correlation IDs
+deferred (no call-site-free mechanism in Next 16.3.3).
 
 ## More docs
 

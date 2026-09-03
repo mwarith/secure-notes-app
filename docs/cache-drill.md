@@ -137,3 +137,14 @@ has no `count_resets` function (it is a parse error) — use `resets()`, e.g.
 - Metrics signature: misses 3 → 8 while hits stalled at 1 during the
   outage. After recovery the first read missed and repopulated, hits
   resumed (1 → 2), and zero `valkey_failed` warns appeared post-recovery.
+
+### 2026-09-03 (post-ENG-54, PR #44) — AC 3 agreement re-run
+
+- Direct `/api/metrics` vs Prometheus agreement within one 15s scrape at
+  every phase, byte-identical in both ledgers: baseline hits=1/misses=1,
+  outage hits=1/misses=17, recovery hits=7/misses=23.
+- Non-sparse exposition held: the counter series never went absent across
+  the rebuild and outage; the Cache row showed the live signature (misses
+  climbing, hits stalled, ratio dipping; recovery restored it).
+- Journeys near-instant during the outage (ENG-53 holding); zero
+  `valkey_failed` warns post-recovery. This closes ENG-54's live AC.

@@ -439,12 +439,221 @@
     },
     {
       "type": "row",
-      "title": "Application log lines (Loki)",
+      "title": "Cache",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 16
+      },
+      "id": 11,
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Notes cache — hit/miss rate (5m)",
+      "description": "rate(notes_cache_hits_total[5m]) vs rate(notes_cache_misses_total[5m]). Sparse exposition — no data until Prometheus has scraped traffic. During a Valkey outage, misses spike and hits stall: the miss counter includes Valkey-failure paths (ENG-36), so failed cache operations read as misses while the DB-backed read path keeps serving.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 12,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(notes_cache_hits_total[5m])",
+          "legendFormat": "hits",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "expr": "rate(notes_cache_misses_total[5m])",
+          "legendFormat": "misses",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Notes cache — hit ratio (5m)",
+      "description": "Hits divided by total cache reads over 5m. The ratio dips toward 0 during a Valkey outage — that is the expected signature of the bounded-failure design (failed reads count as misses, ENG-36), not a bug: the app keeps serving from Postgres while the ratio recovers after Valkey returns.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 13,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "displayMode": "background",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "showPercentChange": false,
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(notes_cache_hits_total[5m])) / clamp_min(sum(rate(notes_cache_hits_total[5m])) + sum(rate(notes_cache_misses_total[5m])), 1e-9)",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "title": "Log lines — cache.valkey_failed",
+      "description": "cache.valkey_failed lines — the one warn per failed cache operation emitted by the bounded notes cache helper (ENG-36; operation=get|set|del). KNOWN GAP: log shipping is not wired yet — Loki receives no logs today, so this panel renders empty, consistent with the other Loki panels; a Promtail/Alloy sidecar follow-up (ENG-52) ships the web container's stdout here as job=\"secure-notes-web\".",
+      "datasource": {
+        "type": "loki",
+        "uid": "P8E80F9AEF21F6940"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 14,
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"secure-notes-web\"} | json | event=\"cache.valkey_failed\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "P8E80F9AEF21F6940"
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Application log lines (Loki)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
       },
       "id": 8,
       "collapsed": false
@@ -461,7 +670,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 17
+        "y": 34
       },
       "id": 9,
       "fieldConfig": {
@@ -513,7 +722,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 17
+        "y": 34
       },
       "id": 10,
       "fieldConfig": {

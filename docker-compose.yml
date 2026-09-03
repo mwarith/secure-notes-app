@@ -64,9 +64,20 @@ services:
     volumes:
       - loki_data:/loki
 
+  alloy:
+    image: grafana/alloy:v1.19.2
+    restart: unless-stopped
+    depends_on:
+      - loki
+    volumes:
+      - ./alloy.config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+
 volumes:
   postgres_data:
   valkey_data:
   grafana_data:
   prometheus_data:
   loki_data:
+  alloy_data:

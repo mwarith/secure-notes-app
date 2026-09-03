@@ -597,7 +597,7 @@
     {
       "type": "logs",
       "title": "Log lines — cache.valkey_failed",
-      "description": "cache.valkey_failed lines — the one warn per failed cache operation emitted by the bounded notes cache helper (ENG-36; operation=get|set|del). KNOWN GAP: log shipping is not wired yet — Loki receives no logs today, so this panel renders empty, consistent with the other Loki panels; a Promtail/Alloy sidecar follow-up (ENG-52) ships the web container's stdout here as job=\"secure-notes-web\".",
+      "description": "cache.valkey_failed lines — the one warn per failed cache operation emitted by the bounded notes cache helper (ENG-36; operation=get|set|del). Shipped by the Alloy sidecar (ENG-52): the web container's stdout is tailed into Loki as job=\"secure-notes-web\", pino JSON lines byte-intact, so the | json | event= pipeline resolves directly.",
       "datasource": {
         "type": "loki",
         "uid": "P8E80F9AEF21F6940"
@@ -661,7 +661,7 @@
     {
       "type": "logs",
       "title": "Log lines — error.captured",
-      "description": "Log lines for error.captured — the error classification layer's capture event (class=operational|unexpected, PRD §9/§10). KNOWN GAP: log shipping is not wired yet — Loki receives no logs today, so this panel renders empty; a Promtail/Alloy sidecar follow-up ships the web container's stdout here as job=\"secure-notes-web\". See the ENG-40 report and the follow-up ticket.",
+      "description": "Log lines for error.captured — the error classification layer's capture event (class=operational|unexpected, PRD §9/§10). Shipped by the Alloy sidecar (ENG-52): the web container's stdout is tailed into Loki as job=\"secure-notes-web\", pino JSON lines byte-intact, so the | json | event= pipeline resolves.",
       "datasource": {
         "type": "loki",
         "uid": "P8E80F9AEF21F6940"
@@ -713,7 +713,7 @@
     {
       "type": "logs",
       "title": "Log lines — autosave.save_failed",
-      "description": "autosave.save_failed lines: autosave flushes that failed and were surfaced to the editor for retry. KNOWN GAP: log shipping is not wired yet — Loki receives no logs today, so this panel renders empty; a Promtail/Alloy sidecar follow-up ships the web container's stdout here as job=\"secure-notes-web\". See the ENG-40 report and the follow-up ticket.",
+      "description": "autosave.save_failed lines: autosave flushes that failed and were surfaced to the editor for retry. Shipped by the Alloy sidecar (ENG-52): the web container's stdout is tailed into Loki as job=\"secure-notes-web\", pino JSON lines byte-intact, so the | json | event= pipeline resolves.",
       "datasource": {
         "type": "loki",
         "uid": "P8E80F9AEF21F6940"

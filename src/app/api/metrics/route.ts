@@ -1,4 +1,7 @@
-import { readCounter } from "@/lib/metrics";
+import {
+  processStartedAtEpochMs,
+  readCounter,
+} from "@/lib/metrics";
 
 /**
  * Prometheus text exposition of the counter seam (PRD §11). The seam
@@ -17,9 +20,29 @@ import { readCounter } from "@/lib/metrics";
  * - already-compliant names (autosave_failures_total) pass through as-is
  * A future "errors.<x>" seam counter needs one catalog line below.
  *
- * Exposition is sparse: a seam counter that was never incremented
- * (readCounter === 0) is omitted — an absent Prometheus counter already
- * reads as zero.
+ * Non-sparse exposition (ENG-54, superseding the old "absent reads as
+ * zero" sparse stance): every catalog family is emitted every scrape,
+ * including at 0. Sparse exposition made a fresh process (web restart or
+ * recreate) serve an EMPTY body: Prometheus saw the series go absent and
+ * reappear at the reset value — a silent drop (drill finding F2, live in
+ * the ENG-54 Phase 1 restart experiment). Absence is NOT unambiguous zero
+ * once restarts exist: it breaks resets()/rate() continuity, and the
+ * in-memory registry demonstrably resets with the process while
+ * RestartCount stays 0 (docker tracks restart-policy restarts only).
+ * Continuity is what keeps rate()/increase() reset-correct across
+ * restarts, so counters are always present.
+ *
+ * Restart visibility (ENG-54): the body also carries
+ * app_process_start_time_seconds (gauge, epoch seconds — restarts show as
+ * a jump) and a Prometheus-standard _created line per counter sample
+ * (family name minus _total, same labels, value = process start epoch).
+ * Verified live on the compose Prometheus (v3.14.0, enable-feature=""):
+ * _created series are ingested but rate()/increase() do not consume them
+ * without the created-timestamp feature flag — the reset correction that
+ * actually keeps rate()/increase() honest across restarts here is series
+ * continuity (non-sparse exposition) plus the engine's decrease-based
+ * reset correction. The _created lines ride along for engines (or future
+ * flag flips) that do consume them; do not credit them on this engine.
  *
  * Auth stance: the body is aggregate counters only — no secrets, tokens,
  * session values, or user identifiers (the frozen seams forbid them). The
@@ -88,30 +111,49 @@ const CATALOG: CatalogEntry[] = [
   },
 ];
 
+const PROCESS_START_FAMILY: MetricFamily = {
+  name: "app_process_start_time_seconds",
+  help: "Start time of this web process as epoch seconds (ENG-54): the in-memory counter registry resets with the process, so a jump marks a counter reset that docker's RestartCount does not record.",
+};
+
+/** Prometheus-standard _created name for a counter family (strip _total). */
+function createdName(familyName: string): string {
+  return familyName.endsWith("_total")
+    ? `${familyName.slice(0, -"_total".length)}_created`
+    : `${familyName}_created`;
+}
+
 export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<Response> {
+  const startedAtSeconds = Math.floor(processStartedAtEpochMs() / 1000);
   const lines: string[] = [];
   const emittedFamilies = new Set<string>();
 
+  lines.push(`# HELP ${PROCESS_START_FAMILY.name} ${PROCESS_START_FAMILY.help}`);
+  lines.push(`# TYPE ${PROCESS_START_FAMILY.name} gauge`);
+  lines.push(`${PROCESS_START_FAMILY.name} ${startedAtSeconds}`);
+
   for (const entry of CATALOG) {
-    const value = readCounter(entry.seamName);
-    if (value === 0) {
-      continue;
-    }
     if (!emittedFamilies.has(entry.family.name)) {
       lines.push(`# HELP ${entry.family.name} ${entry.family.help}`);
       lines.push(`# TYPE ${entry.family.name} counter`);
       emittedFamilies.add(entry.family.name);
     }
+    const value = readCounter(entry.seamName);
     lines.push(
       entry.classLabel
         ? `${entry.family.name}{class="${entry.classLabel}"} ${value}`
         : `${entry.family.name} ${value}`,
     );
+    lines.push(
+      entry.classLabel
+        ? `${createdName(entry.family.name)}{class="${entry.classLabel}"} ${startedAtSeconds}`
+        : `${createdName(entry.family.name)} ${startedAtSeconds}`,
+    );
   }
 
-  const body = lines.length > 0 ? `${lines.join("\n")}\n` : "";
+  const body = `${lines.join("\n")}\n`;
   return new Response(body, {
     status: 200,
     headers: { "content-type": CONTENT_TYPE },

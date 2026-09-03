@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { incrementCounter, readCounter } from "@/lib/metrics";
+import {
+  incrementCounter,
+  processStartedAtEpochMs,
+  readCounter,
+} from "@/lib/metrics";
 import { log } from "@/lib/logger";
 
 describe("metrics counters", () => {
@@ -14,6 +18,28 @@ describe("metrics counters", () => {
     incrementCounter("metrics_test.b_total", 5);
     expect(readCounter("metrics_test.a_total")).toBe(3);
     expect(readCounter("metrics_test.b_total")).toBe(5);
+  });
+});
+
+describe("process start epoch (ENG-54)", () => {
+  it("is stable across module re-instantiations within a process (globalThis anchor)", async () => {
+    const first = processStartedAtEpochMs();
+    vi.resetModules();
+    const reimported = (await import("@/lib/metrics"))
+      .processStartedAtEpochMs;
+    expect(reimported()).toBe(first);
+  });
+
+  it("is a sane epoch in milliseconds (finite, not in the future)", () => {
+    const epoch = processStartedAtEpochMs();
+    expect(Number.isFinite(epoch)).toBe(true);
+    expect(epoch).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("does not change the counter seam behavior (increments/reads unchanged)", () => {
+    const before = readCounter("metrics_test.epoch_probe_total");
+    incrementCounter("metrics_test.epoch_probe_total", 2);
+    expect(readCounter("metrics_test.epoch_probe_total")).toBe(before + 2);
   });
 });
 

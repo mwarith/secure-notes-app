@@ -11,6 +11,18 @@ const counters = ((globalThis as { __appMetricsCounters?: Map<string, number> })
   .__appMetricsCounters ??= new Map<string, number>());
 
 /**
+ * Process-start epoch (ENG-54), anchored on globalThis beside the Map so
+ * module re-instantiations (one per bundle) share it: every counter in this
+ * registry is born with the process, which is what /api/metrics exposes as
+ * app_process_start_time_seconds and the per-counter _created lines. The
+ * registry resets with the process — that restart is the thing this value
+ * makes visible.
+ */
+const processStartedAtMs = ((globalThis as {
+  __appMetricsCountersStartedAt?: number;
+}).__appMetricsCountersStartedAt ??= Date.now());
+
+/**
  * In-memory counter seam for observability. ENG-30 wires this to Prometheus
  * via /api/metrics — call sites must not change.
  */
@@ -20,4 +32,9 @@ export function incrementCounter(name: string, by = 1): void {
 
 export function readCounter(name: string): number {
   return counters.get(name) ?? 0;
+}
+
+/** Process-start epoch in milliseconds (ENG-54 restart-aware exposition). */
+export function processStartedAtEpochMs(): number {
+  return processStartedAtMs;
 }

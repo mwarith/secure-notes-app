@@ -73,6 +73,29 @@ Reload the workspace once — the first read misses and repopulates the keys;
 after that, hits resume climbing in Grafana and the hit-ratio stat recovers.
 Nothing else to do: caching resumes automatically.
 
+## Restart signature (ENG-54)
+
+Web restarts (`docker compose restart web`, or a recreate via
+`docker compose up -d web`) reset the in-memory counter registry to zero.
+Docker's `RestartCount` stays 0 — it tracks restart-policy restarts only, so
+it is a blind spot for exactly the events that reset counters. Since ENG-54:
+
+- Every catalog counter is exposed on every scrape, including at 0, so the
+  series no longer goes absent and reappear at the reset value (the silent
+  "drop" the ENG-38 drill saw as finding F2).
+- `app_process_start_time_seconds` (gauge) jumps to the new process start —
+  the visible marker that counters restarted.
+- Each counter sample carries a Prometheus-standard `_created` line with the
+  same labels. The compose Prometheus (v3.14.0, no feature flags) ingests
+  these but its `rate()`/`increase()` do not consume them — the reset
+  correction that works here is series continuity (counters never gap) plus
+  the engine's own decrease-based reset correction, verified live in
+  ENG-54's restart experiment.
+
+When querying reset behavior, note the compose Prometheus is v3.14.0, which
+has no `count_resets` function (it is a parse error) — use `resets()`, e.g.
+`resets(notes_cache_hits_total[2h])`.
+
 ## Narration template (demo step 19)
 
 - **What to show**: the Cache row before the outage (hits and misses both

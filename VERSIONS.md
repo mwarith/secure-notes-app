@@ -22,5 +22,6 @@ Versions selected on 2026-08-30, per project's dependency version policy (no flo
 | Grafana             | 13.2.0                                            | latest stable release                                                  |
 | Prometheus          | 3.14.0                                            | latest stable release                                                  |
 | Loki                | 3.7.4                                             | latest stable release                                                  |
+| pino                | 10.3.1                                            | latest stable at selection time (npm install pino; ENG-16 logger seam)  |
 
 Versions will only be updated via a dedicated dependency-update ticket, not incidentally on container rebuild.

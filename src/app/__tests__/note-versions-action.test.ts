@@ -12,6 +12,7 @@ import {
   listNoteVersionsForUser,
 } from "@/lib/notes";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import {
   checkpointNoteVersionAction,
   listNoteVersionsAction,
@@ -179,9 +180,7 @@ describe("listNoteVersionsAction (integration)", () => {
     vi.mocked(listNoteVersionsForUser).mockRejectedValueOnce(
       new Error("version join exploded during load"),
     );
-    const warnSpy = vi
-      .spyOn(console, "warn")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.operational");
 
@@ -190,8 +189,8 @@ describe("listNoteVersionsAction (integration)", () => {
       );
 
       expect(readCounter("errors.operational")).toBe(before + 1);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("warn")).toHaveLength(1);
+      const parsed = logCapture.byLevel("warn")[0] as {
         level: string;
         event: string;
         class: string;
@@ -202,7 +201,7 @@ describe("listNoteVersionsAction (integration)", () => {
       expect(parsed.class).toBe("operational");
       expect(parsed.detail).toBeUndefined();
     } finally {
-      warnSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });
@@ -214,9 +213,7 @@ describe("checkpointNoteVersionAction (integration)", () => {
     vi.mocked(checkpointNoteVersionForUser).mockRejectedValueOnce(
       new Error("version insert failed during checkpoint"),
     );
-    const warnSpy = vi
-      .spyOn(console, "warn")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.operational");
 
@@ -225,8 +222,8 @@ describe("checkpointNoteVersionAction (integration)", () => {
       expect(result).toEqual({ created: false });
       expect(await db.select().from(auditEvents)).toEqual([]);
       expect(readCounter("errors.operational")).toBe(before + 1);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("warn")).toHaveLength(1);
+      const parsed = logCapture.byLevel("warn")[0] as {
         level: string;
         event: string;
         class: string;
@@ -237,7 +234,7 @@ describe("checkpointNoteVersionAction (integration)", () => {
       expect(parsed.class).toBe("operational");
       expect(parsed.detail).toBeUndefined();
     } finally {
-      warnSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

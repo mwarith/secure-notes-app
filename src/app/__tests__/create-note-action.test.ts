@@ -9,6 +9,7 @@ import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
 import { createNoteForUser } from "@/lib/notes";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import { createNoteAction } from "@/app/actions";
 import { revalidatePath } from "next/cache";
 import {
@@ -161,9 +162,7 @@ describe("createNoteAction (integration)", () => {
     vi.mocked(createNoteForUser).mockRejectedValueOnce(
       new Error("notes table vanished mid-create"),
     );
-    const warnSpy = vi
-      .spyOn(console, "warn")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.operational");
 
@@ -179,8 +178,8 @@ describe("createNoteAction (integration)", () => {
       expect(await db.select().from(notes)).toHaveLength(0);
       expect(await db.select().from(auditEvents)).toHaveLength(0);
       expect(readCounter("errors.operational")).toBe(before + 1);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("warn")).toHaveLength(1);
+      const parsed = logCapture.byLevel("warn")[0] as {
         level: string;
         event: string;
         class: string;
@@ -191,7 +190,7 @@ describe("createNoteAction (integration)", () => {
       expect(parsed.class).toBe("operational");
       expect(parsed.detail).toBeUndefined();
     } finally {
-      warnSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

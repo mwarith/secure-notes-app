@@ -9,6 +9,7 @@ import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
 import { deleteNoteForUser } from "@/lib/notes";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import { deleteNoteAction } from "@/app/actions";
 import {
   resolveTestDatabaseUrl,
@@ -196,9 +197,7 @@ describe("deleteNoteAction (integration)", () => {
     vi.mocked(deleteNoteForUser).mockRejectedValueOnce(
       new Error("notes table locked during delete"),
     );
-    const warnSpy = vi
-      .spyOn(console, "warn")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.operational");
 
@@ -210,8 +209,8 @@ describe("deleteNoteAction (integration)", () => {
       });
       expect(await db.select().from(auditEvents)).toEqual([]);
       expect(readCounter("errors.operational")).toBe(before + 1);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("warn")).toHaveLength(1);
+      const parsed = logCapture.byLevel("warn")[0] as {
         level: string;
         event: string;
         class: string;
@@ -222,7 +221,7 @@ describe("deleteNoteAction (integration)", () => {
       expect(parsed.class).toBe("operational");
       expect(parsed.detail).toBeUndefined();
     } finally {
-      warnSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

@@ -8,6 +8,7 @@ import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import { login } from "@/lib/auth/login";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import { updateNoteAction } from "@/app/actions";
 import { revalidatePath } from "next/cache";
 import {
@@ -122,9 +123,7 @@ describe("updateNoteAction transient failures (integration)", () => {
     vi.mocked(updateNoteForUser).mockImplementation(async () => {
       throw new Error("connection refused");
     });
-    const errorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     const failuresBefore = readCounter("autosave_failures_total");
 
     try {
@@ -141,9 +140,8 @@ describe("updateNoteAction transient failures (integration)", () => {
       expect(revalidatePath).not.toHaveBeenCalled();
       expect(await db.select().from(auditEvents)).toHaveLength(0);
 
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const line = errorSpy.mock.calls[0]?.[0] as string;
-      const parsed = JSON.parse(line) as {
+      expect(logCapture.byLevel("error")).toHaveLength(1);
+      const parsed = logCapture.byLevel("error")[0] as {
         level: string;
         event: string;
         userId: string;
@@ -156,7 +154,7 @@ describe("updateNoteAction transient failures (integration)", () => {
 
       expect(readCounter("autosave_failures_total")).toBe(failuresBefore + 1);
     } finally {
-      errorSpy.mockRestore();
+      logCapture.restore();
     }
   });
 
@@ -164,9 +162,7 @@ describe("updateNoteAction transient failures (integration)", () => {
     await seedSession();
     const noteId = "00000000-0000-0000-0000-0000000000fe";
     vi.mocked(getSession).mockRejectedValue(new Error("connection refused"));
-    const errorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     const failuresBefore = readCounter("autosave_failures_total");
 
     try {
@@ -183,9 +179,8 @@ describe("updateNoteAction transient failures (integration)", () => {
       expect(revalidatePath).not.toHaveBeenCalled();
       expect(await db.select().from(auditEvents)).toHaveLength(0);
 
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const line = errorSpy.mock.calls[0]?.[0] as string;
-      const parsed = JSON.parse(line) as {
+      expect(logCapture.byLevel("error")).toHaveLength(1);
+      const parsed = logCapture.byLevel("error")[0] as {
         level: string;
         event: string;
         userId: string | null;
@@ -198,7 +193,7 @@ describe("updateNoteAction transient failures (integration)", () => {
 
       expect(readCounter("autosave_failures_total")).toBe(failuresBefore + 1);
     } finally {
-      errorSpy.mockRestore();
+      logCapture.restore();
     }
   });
 
@@ -208,9 +203,7 @@ describe("updateNoteAction transient failures (integration)", () => {
     vi.mocked(updateNoteForUser).mockRejectedValueOnce(
       new Error("connection refused"),
     );
-    const warnSpy = vi
-      .spyOn(console, "warn")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.operational");
 
@@ -225,8 +218,8 @@ describe("updateNoteAction transient failures (integration)", () => {
         message: "Couldn't save right now. Try again.",
       });
       expect(readCounter("errors.operational")).toBe(before + 1);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("warn")).toHaveLength(1);
+      const parsed = logCapture.byLevel("warn")[0] as {
         level: string;
         event: string;
         class: string;
@@ -237,7 +230,7 @@ describe("updateNoteAction transient failures (integration)", () => {
       expect(parsed.class).toBe("operational");
       expect(parsed.detail).toBeUndefined();
     } finally {
-      warnSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

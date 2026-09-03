@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   AppError,
   PRD9_CHECKLIST,
@@ -8,6 +8,7 @@ import {
   type Prd9CaseId,
 } from "@/lib/errors";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 
 describe("AppError", () => {
   it("classifies user_input as not retryable", () => {
@@ -115,9 +116,7 @@ describe("PRD9_CHECKLIST", () => {
 
 describe("reportError", () => {
   it("captures unexpected failures via the seam and increments errors.unexpected", () => {
-    const errorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.unexpected");
       const result = reportError(new Error("raw internal failure"), {
@@ -127,8 +126,8 @@ describe("reportError", () => {
         message: "Something went wrong.",
         retryable: false,
       });
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(errorSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("error")).toHaveLength(1);
+      const parsed = logCapture.byLevel("error")[0] as {
         level: string;
         event: string;
         class: string;
@@ -138,7 +137,7 @@ describe("reportError", () => {
       expect(parsed.class).toBe("unexpected");
       expect(readCounter("errors.unexpected")).toBe(before + 1);
     } finally {
-      errorSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

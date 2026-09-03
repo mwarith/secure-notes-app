@@ -18,6 +18,7 @@ import { generateTotpSecret, totpUri } from "@/lib/auth/totp";
 import { TOTP, URI } from "otpauth";
 import { verifyTotpChallengeAction } from "@/app/(auth)/login/2fa/actions";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import {
   confirmTotpSetupAction,
   startTotpSetupAction,
@@ -516,9 +517,7 @@ describe("verifyTotpChallengeAction (integration)", () => {
     vi.mocked(getSession).mockRejectedValueOnce(
       new Error("valkey cluster unavailable during challenge"),
     );
-    const errorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.unexpected");
 
@@ -533,8 +532,8 @@ describe("verifyTotpChallengeAction (integration)", () => {
       });
       expect(await db.select().from(auditEvents)).toHaveLength(0);
       expect(readCounter("errors.unexpected")).toBe(before + 1);
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(errorSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("error")).toHaveLength(1);
+      const parsed = logCapture.byLevel("error")[0] as {
         level: string;
         event: string;
         class: string;
@@ -545,7 +544,7 @@ describe("verifyTotpChallengeAction (integration)", () => {
       expect(parsed.class).toBe("unexpected");
       expect(parsed.detail).toBeUndefined();
     } finally {
-      errorSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

@@ -4,6 +4,7 @@ import {
   processStartedAtEpochMs,
   readCounter,
 } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import { log } from "@/lib/logger";
 
 describe("metrics counters", () => {
@@ -45,18 +46,15 @@ describe("process start epoch (ENG-54)", () => {
 
 describe("log", () => {
   it("emits one JSON line with ts, level, event, and fields", () => {
-    const errorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       log("error", "autosave.save_failed", {
         userId: "user-1",
         noteId: "note-1",
       });
 
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const line = errorSpy.mock.calls[0]?.[0] as string;
-      const parsed = JSON.parse(line) as {
+      expect(logCapture.byLevel("error")).toHaveLength(1);
+      const parsed = logCapture.byLevel("error")[0] as {
         ts: string;
         level: string;
         event: string;
@@ -70,16 +68,16 @@ describe("log", () => {
       expect(parsed.userId).toBe("user-1");
       expect(parsed.noteId).toBe("note-1");
     } finally {
-      errorSpy.mockRestore();
+      logCapture.restore();
     }
   });
 
   it("emits without a fields object when none is given", () => {
-    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       log("info", "some.event");
-      expect(infoSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(infoSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("info")).toHaveLength(1);
+      const parsed = logCapture.byLevel("info")[0] as {
         ts: string;
         level: string;
         event: string;
@@ -87,7 +85,7 @@ describe("log", () => {
       expect(parsed.level).toBe("info");
       expect(parsed.event).toBe("some.event");
     } finally {
-      infoSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

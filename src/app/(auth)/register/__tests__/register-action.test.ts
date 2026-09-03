@@ -9,6 +9,7 @@ import { pool as appPool } from "@/db";
 import { valkey as appValkey } from "@/lib/valkey";
 import { registerUser } from "@/lib/auth/register";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import {
   resolveTestDatabaseUrl,
   resolveTestValkeyUrl,
@@ -131,9 +132,7 @@ describe("registerAction (integration)", () => {
     vi.mocked(registerUser).mockRejectedValueOnce(
       new Error("relation users disappeared mid-registration"),
     );
-    const errorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.unexpected");
 
@@ -149,8 +148,8 @@ describe("registerAction (integration)", () => {
       expect(await db.select().from(users)).toHaveLength(0);
       expect(await db.select().from(auditEvents)).toHaveLength(0);
       expect(readCounter("errors.unexpected")).toBe(before + 1);
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(errorSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("error")).toHaveLength(1);
+      const parsed = logCapture.byLevel("error")[0] as {
         level: string;
         event: string;
         class: string;
@@ -161,7 +160,7 @@ describe("registerAction (integration)", () => {
       expect(parsed.class).toBe("unexpected");
       expect(parsed.detail).toBeUndefined();
     } finally {
-      errorSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

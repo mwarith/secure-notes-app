@@ -9,6 +9,7 @@ import { valkey as appValkey } from "@/lib/valkey";
 import { login, logout } from "@/lib/auth/login";
 import { getSession } from "@/lib/auth/session";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import { loginAction, logoutAction } from "@/app/(auth)/login/actions";
 import { resolveTestDatabaseUrl, resolveTestValkeyUrl } from "../../../../../vitest.helpers";
 
@@ -185,9 +186,7 @@ describe("loginAction (integration)", () => {
     vi.mocked(login).mockRejectedValueOnce(
       new Error("ECONNREFUSED 10.1.2.3:5432 auth database"),
     );
-    const errorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.unexpected");
 
@@ -203,8 +202,8 @@ describe("loginAction (integration)", () => {
       expect(cookieStore.set).not.toHaveBeenCalled();
       expect(await db.select().from(auditEvents)).toHaveLength(0);
       expect(readCounter("errors.unexpected")).toBe(before + 1);
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(errorSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("error")).toHaveLength(1);
+      const parsed = logCapture.byLevel("error")[0] as {
         level: string;
         event: string;
         class: string;
@@ -215,7 +214,7 @@ describe("loginAction (integration)", () => {
       expect(parsed.class).toBe("unexpected");
       expect(parsed.detail).toBeUndefined();
     } finally {
-      errorSpy.mockRestore();
+      logCapture.restore();
     }
   });
 
@@ -224,9 +223,7 @@ describe("loginAction (integration)", () => {
     vi.mocked(logout).mockRejectedValueOnce(
       new Error("valkey connection lost during logout"),
     );
-    const warnSpy = vi
-      .spyOn(console, "warn")
-      .mockImplementation(() => undefined);
+    const logCapture = captureLog();
     try {
       const before = readCounter("errors.operational");
 
@@ -234,8 +231,8 @@ describe("loginAction (integration)", () => {
 
       expect(cookieStore.delete).toHaveBeenCalledWith("session");
       expect(readCounter("errors.operational")).toBe(before + 1);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const parsed = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
+      expect(logCapture.byLevel("warn")).toHaveLength(1);
+      const parsed = logCapture.byLevel("warn")[0] as {
         level: string;
         event: string;
         class: string;
@@ -244,7 +241,7 @@ describe("loginAction (integration)", () => {
       expect(parsed.event).toBe("error.captured");
       expect(parsed.class).toBe("operational");
     } finally {
-      warnSpy.mockRestore();
+      logCapture.restore();
     }
   });
 });

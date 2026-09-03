@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Redis } from "ioredis";
 import { readCounter } from "@/lib/metrics";
+import { captureLog } from "@/lib/__tests__/log-capture";
 import { valkey } from "@/lib/valkey";
 import {
   delNotesCache,
@@ -159,40 +160,48 @@ describe("bounded failure (unit — valkey failure injected)", () => {
   }
 
   it("get -> null + one warn + miss counter", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logCapture = captureLog();
     const getSpy = vi
       .spyOn(valkey, "get")
       .mockImplementation(failingValkey(new Error("valkey down")).get);
     const missesBefore = readCounter("notes_cache_misses_total");
 
-    expect(await getNotesCache(LIST_KEY)).toBeNull();
-    expect(getSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    const line = JSON.parse(warnSpy.mock.calls[0]?.[0] as string) as {
-      level: string;
-      event: string;
-      operation: string;
-    };
-    expect(line.level).toBe("warn");
-    expect(line.event).toBe("cache.valkey_failed");
-    expect(line.operation).toBe("get");
-    expect(readCounter("notes_cache_misses_total")).toBe(missesBefore + 1);
+    try {
+      expect(await getNotesCache(LIST_KEY)).toBeNull();
+      expect(getSpy).toHaveBeenCalledTimes(1);
+      expect(logCapture.byLevel("warn")).toHaveLength(1);
+      const line = logCapture.byLevel("warn")[0] as {
+        level: string;
+        event: string;
+        operation: string;
+      };
+      expect(line.level).toBe("warn");
+      expect(line.event).toBe("cache.valkey_failed");
+      expect(line.operation).toBe("get");
+      expect(readCounter("notes_cache_misses_total")).toBe(missesBefore + 1);
+    } finally {
+      logCapture.restore();
+    }
   });
 
   it("set -> false + one warn; del -> false + one warn; ttl -> null", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logCapture = captureLog();
     const failing = failingValkey(new Error("valkey down"));
     const setSpy = vi.spyOn(valkey, "set").mockImplementation(failing.set);
     const delSpy = vi.spyOn(valkey, "del").mockImplementation(failing.del);
     const ttlSpy = vi.spyOn(valkey, "ttl").mockImplementation(failing.ttl);
 
-    expect(await setNotesCache(NOTE_KEY, { v: 1 }, 60)).toBe(false);
-    expect(await delNotesCache(NOTE_KEY)).toBe(false);
-    expect(await ttlNotesCache(NOTE_KEY)).toBeNull();
-    expect(warnSpy).toHaveBeenCalledTimes(2);
-    expect(setSpy).toHaveBeenCalledTimes(1);
-    expect(delSpy).toHaveBeenCalledTimes(1);
-    expect(countCalls(ttlSpy)).toBe(1);
+    try {
+      expect(await setNotesCache(NOTE_KEY, { v: 1 }, 60)).toBe(false);
+      expect(await delNotesCache(NOTE_KEY)).toBe(false);
+      expect(await ttlNotesCache(NOTE_KEY)).toBeNull();
+      expect(logCapture.byLevel("warn")).toHaveLength(2);
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      expect(delSpy).toHaveBeenCalledTimes(1);
+      expect(countCalls(ttlSpy)).toBe(1);
+    } finally {
+      logCapture.restore();
+    }
   });
 });
 
@@ -205,10 +214,14 @@ describe("delete (integration)", () => {
   });
 
   it("logs nothing when valkey is healthy", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    await setNotesCache(NOTE_KEY, { v: 1 }, 60);
-    await getNotesCache(NOTE_KEY);
-    await delNotesCache(NOTE_KEY);
-    expect(warnSpy).not.toHaveBeenCalled();
+    const logCapture = captureLog();
+    try {
+      await setNotesCache(NOTE_KEY, { v: 1 }, 60);
+      await getNotesCache(NOTE_KEY);
+      await delNotesCache(NOTE_KEY);
+      expect(logCapture.byLevel("warn")).toHaveLength(0);
+    } finally {
+      logCapture.restore();
+    }
   });
 });

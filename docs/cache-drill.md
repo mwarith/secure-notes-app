@@ -41,9 +41,13 @@ docker stop secure-notes-app-valkey-1
 ```
 
 1. In the browser: **reload the workspace, open a note, edit + let autosave
-   fire, restore an earlier version** — every journey still works with no
-   user-visible change. The reads fall through to Postgres; writes are
-   DB-only and their invalidation degrades gracefully.
+   fire, restore an earlier version** — every journey still completes, and no
+   content or behavior changes: reads fall through to Postgres, writes are
+   DB-only, and invalidation degrades gracefully. Expect the journeys to be
+   **noticeably slower** (drill finding, 2026-09-03: ~10–60s per journey —
+   each failed cache operation burns its bounded retry budget, ~27s per op
+   on this stack, before falling through). Correctness is unaffected; only
+   latency degrades.
 2. Bounded failure is visible, not flooded:
 
    ```powershell
@@ -78,11 +82,11 @@ Nothing else to do: caching resumes automatically.
 - **What to say**: "Notes reads are served through a bounded Valkey cache.
   During a Valkey outage every cache read counts as a miss — that is why the
   hit ratio dips toward zero, it is the expected signature of the
-  fail-degrade design, not an error — while the app keeps working exactly as
-  before because every read falls back to the ownership-scoped Postgres
-  query and every failed cache operation logs exactly one warning instead of
-  retrying or throwing. When Valkey returns, the next read repopulates the
-  cache and the ratio recovers on its own."
+  fail-degrade design, not an error — while the app keeps working on
+  Postgres with the same content and behavior, temporarily slower, because
+  every failed cache operation logs exactly one warning instead of retrying
+  or throwing. When Valkey returns, the next read repopulates the cache and
+  the ratio recovers on its own."
 - **If asked about staleness**: writes invalidate the affected keys
   immediately after commit; the 60-second TTL only bounds staleness for the
   window where invalidation itself failed (e.g. Valkey down at write time).
